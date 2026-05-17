@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is inspired by Keep a Changelog, and versions follow SemVer.
 
+## [0.1.1](https://github.com/moiraweave-labs/moiraweave-core/compare/v0.1.0...v0.1.1) (2026-05-17)
+
+
+### Documentation
+
+* **readme:** improve structure, scope, and CI badges ([c293d65](https://github.com/moiraweave-labs/moiraweave-core/commit/c293d6532f8920c72afc4c845a3bcd47e8eea373))
+
 ## 0.1.0 (2026-05-17)
 
 
