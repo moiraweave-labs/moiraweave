@@ -33,6 +33,6 @@ spec:
       targetPort: redis-sentinel
     {{- end }}
     {{- if .Values.sentinel.service.headless.extraPorts }}
-    {{- include "common.tplvalues.render" (dict "value" .Values.sentinel.service.headless.extraPorts "context" $) | nindent 4 }} 
+    {{- include "common.tplvalues.render" (dict "value" .Values.sentinel.service.headless.extraPorts "context" $) | nindent 4 }}
     {{- end }}
   selector: {{- include "common.labels.matchLabels" ( dict "customLabels" .Values.commonLabels "context" $ ) | nindent 4 }}

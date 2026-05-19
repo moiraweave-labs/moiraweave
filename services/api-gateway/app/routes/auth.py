@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
+from hmac import compare_digest
 from typing import Annotated
 
-import bcrypt
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -11,14 +11,10 @@ from app.models.auth import LoginRequest, Token
 
 router = APIRouter(tags=["auth"])
 
-# Demo credentials — in production replace with a database-backed user store.
-# Pre-hash at import time so the first request isn't slow.
-_DEMO_USERNAME = "admin"
-_DEMO_PASSWORD_HASH: bytes = bcrypt.hashpw(b"demo-password", bcrypt.gensalt())
 
-
-def _verify_password(plain: str, hashed: bytes) -> bool:
-    return bool(bcrypt.checkpw(plain.encode(), hashed))
+def _verify_password(plain: str, expected: str) -> bool:
+    """Constant-time comparison to prevent timing attacks."""
+    return compare_digest(plain.encode(), expected.encode())
 
 
 def _create_access_token(subject: str, settings: Settings) -> str:
@@ -42,9 +38,11 @@ async def login(
     """Authenticate and return a signed JWT.
 
     Rate-limited to 10 requests/minute per IP to mitigate brute-force attacks.
+    Override ``DEMO_USERNAME`` and ``DEMO_PASSWORD`` via environment variables.
+    Replace with a database-backed user store for production.
     """
-    if body.username != _DEMO_USERNAME or not _verify_password(
-        body.password, _DEMO_PASSWORD_HASH
+    if body.username != settings.demo_username or not _verify_password(
+        body.password, settings.demo_password.get_secret_value()
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

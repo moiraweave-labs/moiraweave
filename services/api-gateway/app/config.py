@@ -29,10 +29,17 @@ class Settings(BaseSettings):
     redis_url: RedisDsn = RedisDsn("redis://redis:6379/0")
     job_ttl_seconds: int = 3600  # how long job hashes live in Redis
 
-    # Qdrant — vector store for RAG pipeline
+    # Qdrant — vector store for pipeline steps
     qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")
-    qdrant_collection: str = "transcriptions"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
+
+    # CORS — override with a comma-separated list via CORS_ORIGINS env var
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+
+    # Demo auth credentials — override via DEMO_USERNAME / DEMO_PASSWORD env vars.
+    # Replace with a database-backed user store for production.
+    demo_username: str = "admin"
+    demo_password: SecretStr = SecretStr("demo-password")
 
     # OpenTelemetry
     otel_enabled: bool = True

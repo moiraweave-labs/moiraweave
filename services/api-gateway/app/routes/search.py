@@ -18,19 +18,21 @@ logger = logging.getLogger(__name__)
 @router.post(
     "/search",
     response_model=SearchResponse,
-    summary="Semantic search over transcriptions",
+    summary="Semantic search over a Qdrant collection",
 )
 @limiter.limit("30/minute")
-async def search_transcriptions(
+async def search(
     request: Request,
     body: SearchRequest,
     qdrant: QdrantDep,
     current_user: CurrentUser,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> SearchResponse:
-    """Find transcriptions semantically similar to ``body.query``.
+    """Query a Qdrant collection by natural language.
 
-    Results are scoped to the authenticated user's own transcriptions.
+    Results are scoped to the authenticated user via a metadata filter on the
+    ``user`` field. The ``collection`` field in the request body determines which
+    Qdrant collection is queried.
     """
     query_filter = Filter(
         must=[
@@ -42,25 +44,22 @@ async def search_transcriptions(
     )
     try:
         hits = await qdrant.query(
-            collection_name=settings.qdrant_collection,
+            collection_name=body.collection,
             query_text=body.query,
             query_filter=query_filter,
             limit=body.limit,
         )
     except UnexpectedResponse as exc:
         if exc.status_code == 404:
-            # Collection doesn't exist yet — no transcriptions indexed.
+            # Collection doesn't exist yet — no data indexed.
             return SearchResponse(results=[], total=0)
         raise
 
     results = [
         SearchHit(
-            job_id=str(hit.id),
+            id=str(hit.id),
             score=round(hit.score, 4),
-            transcript=hit.document,
-            language=str(hit.metadata.get("language", "")),
-            audio_url=str(hit.metadata.get("audio_url", "")),
-            created_at=str(hit.metadata.get("created_at", "")),
+            payload=hit.metadata or {},
         )
         for hit in hits
     ]

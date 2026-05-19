@@ -1,7 +1,7 @@
 """MoiraWeave async inference worker.
 
-Consumes transcription jobs from the ``moiraweave:jobs`` Redis Stream,
-processes them (mock ASR for now), and stores results in Redis Hashes.
+Consumes pipeline jobs from Redis Streams, dispatches each step to its
+KServe V2 inference endpoint, and updates job status in Redis.
 
 Usage:
     python -m app.main
@@ -14,11 +14,9 @@ import uuid
 
 from moiraweave_shared.pipeline import load_pipelines
 from prometheus_client import start_http_server
-from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 
 from app.config import get_settings
-from app.consumer import run_consumer
 from app.pipeline_consumer import run_pipeline_consumer
 
 _METRICS_PORT = 9090
@@ -45,8 +43,6 @@ async def _main() -> None:
     start_http_server(_METRICS_PORT)
 
     redis: Redis = Redis.from_url(str(settings.redis_url), decode_responses=True)
-    qdrant = AsyncQdrantClient(url=str(settings.qdrant_url))
-    qdrant.set_model(settings.embedding_model)
 
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
@@ -57,10 +53,6 @@ async def _main() -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
-
-    consumer_task = asyncio.create_task(
-        run_consumer(redis, consumer_id, qdrant, settings)
-    )
 
     # Start one pipeline consumer task per pipeline definition found in pipelines_dir.
     pipeline_tasks: list[asyncio.Task[None]] = []
@@ -88,12 +80,10 @@ async def _main() -> None:
     # Block until a SIGINT/SIGTERM arrives.
     await shutdown_event.wait()
 
-    consumer_task.cancel()
     for t in pipeline_tasks:
         t.cancel()
-    await asyncio.gather(consumer_task, *pipeline_tasks, return_exceptions=True)
+    await asyncio.gather(*pipeline_tasks, return_exceptions=True)
     await redis.aclose()
-    await qdrant.close()
 
     logger.info("worker_stopped consumer=%s", consumer_id)
 

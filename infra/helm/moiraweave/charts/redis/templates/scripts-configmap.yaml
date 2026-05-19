@@ -472,7 +472,7 @@ data:
       echo "sentinel announce-ip $REDIS_CLUSTER_ANNOUNCE_IP" >> /opt/bitnami/redis-sentinel/etc/prepare-sentinel.conf
     else
       echo "sentinel announce-ip $(get_full_hostname "$HOSTNAME")" >> /opt/bitnami/redis-sentinel/etc/prepare-sentinel.conf
-    fi 
+    fi
     {{- else }}
     echo "sentinel announce-ip $(get_full_hostname "$HOSTNAME")" >> /opt/bitnami/redis-sentinel/etc/prepare-sentinel.conf
     {{- end}}

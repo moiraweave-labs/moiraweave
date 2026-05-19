@@ -235,7 +235,7 @@ Return Redis&reg; password
 Returns the secret value if found or an empty string otherwise
 Used for fetching Redis ACL user passwords from Kubernetes Secrets
 */}}
-{{- define "common.secrets.get" -}} 
+{{- define "common.secrets.get" -}}
 {{- $secret := (lookup "v1" "Secret" .context.Release.Namespace .secret) -}}
 {{- if and $secret (index $secret.data .key) -}}
     {{- index $secret.data .key | b64dec -}}

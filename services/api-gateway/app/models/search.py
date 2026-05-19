@@ -1,7 +1,10 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
 class SearchRequest(BaseModel):
+    collection: str = Field(..., description="Qdrant collection to search against")
     query: str = Field(
         ..., min_length=1, max_length=500, description="Natural language search query"
     )
@@ -9,14 +12,12 @@ class SearchRequest(BaseModel):
 
 
 class SearchHit(BaseModel):
-    job_id: str
+    id: str
     score: float
-    transcript: str
-    language: str
-    audio_url: str
-    created_at: str
+    payload: dict[str, Any]
 
 
 class SearchResponse(BaseModel):
     results: list[SearchHit]
+    total: int
     total: int

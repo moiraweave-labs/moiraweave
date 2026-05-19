@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This module does **not** create any cloud resources.  
+This module does **not** create any cloud resources.
 It defines the canonical variable interface that every environment root module (`envs/local`, `envs/aws`, `envs/gcp`) must satisfy, and performs cross-field validation before any cloud-specific code runs.
 
 ## Usage

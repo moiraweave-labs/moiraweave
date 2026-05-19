@@ -21,7 +21,7 @@ services:
       - "${API_GATEWAY_PORT:-8000}:8000"
     environment:
       # Secrets — set JWT_SECRET_KEY in your .env (never commit it)
-      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-dev-insecure-change-me-before-any-real-use}"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env}"
       JWT_ALGORITHM: "HS256"
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
       RATE_LIMIT_DEFAULT: "100/minute"
@@ -33,9 +33,8 @@ services:
       OTEL_SAMPLE_RATE: "1.0"
       # Redis (rate-limit store + job queue)
       REDIS_URL: "redis://redis:6379/0"
-      # Qdrant (vector store — RAG pipeline)
+      # Qdrant (vector store — pipeline steps)
       QDRANT_URL: "http://qdrant:6333"
-      QDRANT_COLLECTION: "transcriptions"
       EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
       PIPELINES_DIR: "/workspace/pipelines"
       FASTEMBED_CACHE_PATH: "/app/.models"
@@ -53,7 +52,7 @@ services:
       - moiraweave-net
 
   # ── Worker ─────────────────────────────────────────────────────────────────
-  # Async Redis Streams consumer — processes transcription jobs
+  # Async Redis Streams consumer — processes pipeline jobs
   worker:
     build:
       context: .
@@ -61,10 +60,6 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379/0"
       LOG_LEVEL: "INFO"
-      # Qdrant (vector store — RAG pipeline)
-      QDRANT_URL: "http://qdrant:6333"
-      QDRANT_COLLECTION: "transcriptions"
-      EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
       PIPELINES_DIR: "/workspace/pipelines"
       FASTEMBED_CACHE_PATH: "/app/.models"
     volumes:

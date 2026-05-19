@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import AnyHttpUrl, RedisDsn
+from pydantic import RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,14 +15,9 @@ class Settings(BaseSettings):
     redis_url: RedisDsn = RedisDsn("redis://redis:6379/0")
     log_level: str = "INFO"
 
-    # Qdrant — vector store for RAG pipeline
-    qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")
-    qdrant_collection: str = "transcriptions"
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
-
     # MLflow — inference metrics tracking
     mlflow_tracking_uri: str = "http://mlflow.mlflow.svc.cluster.local:80"
-    mlflow_model_name: str = "moiraweave-whisper"
+    mlflow_model_name: str = "moiraweave-pipeline"
     mlflow_model_version: str = "1"
     mlflow_experiment_name: str = "moiraweave-inference"
 
