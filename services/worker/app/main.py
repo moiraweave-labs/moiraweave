@@ -65,9 +65,7 @@ async def _main() -> None:
                     consumer_id,
                     pipeline,
                     shutdown_event,
-                    job_ttl_seconds=settings.job_ttl_seconds
-                    if hasattr(settings, "job_ttl_seconds")
-                    else 3600,
+                    job_ttl_seconds=settings.job_ttl_seconds,
                 )
             )
             pipeline_tasks.append(task)

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     mlflow_model_version: str = "1"
     mlflow_experiment_name: str = "moiraweave-inference"
 
+    # Job result TTL in Redis (seconds)
+    job_ttl_seconds: int = 3600
+
     # Pipeline-as-code — directory containing per-pipeline subdirectories
     pipelines_dir: str = "pipelines"
 

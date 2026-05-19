@@ -20,4 +20,3 @@ class SearchHit(BaseModel):
 class SearchResponse(BaseModel):
     results: list[SearchHit]
     total: int
-    total: int

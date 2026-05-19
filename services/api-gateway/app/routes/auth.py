@@ -11,6 +11,11 @@ from app.models.auth import LoginRequest, Token
 
 router = APIRouter(tags=["auth"])
 
+# Rate-limit string for the login endpoint. Mirrors Settings.rate_limit_auth default.
+# Using a literal here avoids calling get_settings() at module import time,
+# which would bypass the DI system and break test overrides.
+_RATE_LIMIT_AUTH = "10/minute"
+
 
 def _verify_password(plain: str, expected: str) -> bool:
     """Constant-time comparison to prevent timing attacks."""
@@ -29,7 +34,7 @@ def _create_access_token(subject: str, settings: Settings) -> str:
 
 
 @router.post("/token", response_model=Token, summary="Issue JWT access token")
-@limiter.limit(get_settings().rate_limit_auth)
+@limiter.limit(_RATE_LIMIT_AUTH)
 async def login(
     request: Request,
     body: LoginRequest,

@@ -1,11 +1,8 @@
 import logging
-from typing import Annotated
-
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from app.config import Settings, get_settings
 from app.dependencies.auth import CurrentUser
 from app.dependencies.qdrant import QdrantDep
 from app.middleware.rate_limit import limiter
@@ -26,7 +23,6 @@ async def search(
     body: SearchRequest,
     qdrant: QdrantDep,
     current_user: CurrentUser,
-    settings: Annotated[Settings, Depends(get_settings)],
 ) -> SearchResponse:
     """Query a Qdrant collection by natural language.
 
