@@ -42,8 +42,9 @@ class PipelineRunner:
         :raises httpx.HTTPStatusError: If any step returns a non-2xx response.
         """
         current: dict[str, Any] = payload
-        for step in self._pipeline.steps:
-            current = await _call_step(step, current)
+        async with httpx.AsyncClient(timeout=_STEP_TIMEOUT_SECONDS) as client:
+            for step in self._pipeline.steps:
+                current = await _call_step(step, current, client)
         return current
 
     async def check_ready(self, timeout: float = 5.0) -> bool:
@@ -69,11 +70,14 @@ class PipelineRunner:
         return True
 
 
-async def _call_step(step: StepConfig, payload: dict[str, Any]) -> dict[str, Any]:
+async def _call_step(
+    step: StepConfig, payload: dict[str, Any], client: httpx.AsyncClient
+) -> dict[str, Any]:
     """POST *payload* to a step's V2 infer endpoint and return the output dict.
 
     :param step: Step configuration (id, url).
     :param payload: ``{name: value}`` dict of input tensors.
+    :param client: Shared async HTTP client (connection pool reused across steps).
     :returns: ``{tensor_name: value}`` dict from the step's response outputs.
     :raises httpx.HTTPStatusError: When the step returns a non-2xx status.
     """
@@ -84,9 +88,8 @@ async def _call_step(step: StepConfig, payload: dict[str, Any]) -> dict[str, Any
             for k, v in payload.items()
         ],
     }
-    async with httpx.AsyncClient(timeout=_STEP_TIMEOUT_SECONDS) as client:
-        resp = await client.post(url, json=request_body)
-        resp.raise_for_status()
+    resp = await client.post(url, json=request_body)
+    resp.raise_for_status()
 
     response_data: dict[str, Any] = resp.json()
     raw_outputs: list[Any] = response_data.get("outputs", [])

@@ -15,6 +15,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from moiraweave_shared.pipeline import load_pipelines
 from moiraweave_shared.schemas import PipelineJobMessage
+from moiraweave_shared.streams import JOB_KEY_PREFIX
 
 from app.config import Settings, get_settings
 from app.dependencies.auth import CurrentUser
@@ -30,9 +31,6 @@ from app.models.pipelines import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/pipelines", tags=["pipelines"])
-
-_PIPELINE_JOB_KEY_PREFIX = "pipeline:job"
-
 
 @router.get("", response_model=list[PipelineInfo], summary="List available pipelines")
 async def list_pipelines(
@@ -105,7 +103,7 @@ async def submit_pipeline_job(
 
     job_id = str(uuid4())
     created_at = datetime.now(UTC).isoformat()
-    job_key = f"{_PIPELINE_JOB_KEY_PREFIX}:{job_id}"
+    job_key = f"{JOB_KEY_PREFIX}:{job_id}"
 
     await redis.hset(  # type: ignore[misc]
         job_key,
@@ -166,7 +164,7 @@ async def get_pipeline_job_status(
     :raises HTTPException 404: When the job key does not exist.
     :raises HTTPException 403: When the job belongs to another user.
     """
-    job_key = f"{_PIPELINE_JOB_KEY_PREFIX}:{job_id}"
+    job_key = f"{JOB_KEY_PREFIX}:{job_id}"
     data: dict[str, str] = await redis.hgetall(job_key)  # type: ignore[misc]
 
     if not data:

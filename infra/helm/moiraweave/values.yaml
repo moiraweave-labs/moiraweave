@@ -136,8 +136,12 @@ worker:
     # Requires KEDA operator installed in the cluster.
     keda:
       # Redis Streams trigger — scales worker based on stream consumer group lag.
-      redisStreamKey: moiraweave:jobs
-      consumerGroup: workers
+      # Each pipeline has its own trigger stream key (defined in pipeline.yaml as
+      # ``trigger.stream``, e.g. "pipelines:image-search:jobs"). Override this
+      # with the specific pipeline's stream key in your values overrides file.
+      redisStreamKey: "pipelines:image-search:jobs"
+      # Must match CONSUMER_GROUP in moiraweave_shared.streams (currently "moiraweave-pipeline").
+      consumerGroup: moiraweave-pipeline
       pendingEntriesCount: "5"  # scale-up threshold per replica
       # Address of the Redis instance (overrides moiraweave.redisUrl if set).
       # Defaults to the in-cluster Redis service derived from moiraweave.redisUrl.

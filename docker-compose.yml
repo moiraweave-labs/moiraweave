@@ -61,13 +61,8 @@ services:
       REDIS_URL: "redis://redis:6379/0"
       LOG_LEVEL: "INFO"
       PIPELINES_DIR: "/workspace/pipelines"
-      FASTEMBED_CACHE_PATH: "/app/.models"
-    volumes:
-      - fastembed_models:/app/.models
     depends_on:
       redis:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
     restart: unless-stopped
     networks:

@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from moiraweave_shared.schemas import PipelineJobMessage
+from moiraweave_shared.streams import CONSUMER_GROUP, JOB_KEY_PREFIX
 from pydantic import ValidationError
 from redis.exceptions import ResponseError
 
@@ -25,8 +26,6 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
-
-_CONSUMER_GROUP = "moiraweave-pipeline"
 
 
 async def _ensure_consumer_group(redis: Redis, stream: str) -> None:
@@ -48,7 +47,7 @@ async def run_pipeline_consumer(
     pipeline: PipelineDefinition,
     shutdown_event: asyncio.Event,
     *,
-    job_key_prefix: str = "pipeline:job",
+    job_key_prefix: str = JOB_KEY_PREFIX,
     job_ttl_seconds: int = 3600,
 ) -> None:
     """Consume jobs from the pipeline's Redis Stream and route them to steps.
