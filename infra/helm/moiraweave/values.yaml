@@ -6,6 +6,18 @@
 nameOverride: ""
 fullnameOverride: ""
 # ---------------------------------------------------------------------------
+# Image pull secrets for user step images stored in private registries.
+# Create a secret once with:
+#   kubectl create secret docker-registry moiraweave-step-pull-secret \
+#     --docker-server=ghcr.io \
+#     --docker-username=<user> \
+#     --docker-password=<token> \
+#     --namespace=<your-ns>
+# Then reference it here.
+# ---------------------------------------------------------------------------
+imagePullSecrets: []
+# - name: moiraweave-step-pull-secret
+# ---------------------------------------------------------------------------
 # Image registry used by CI/CD (F3-3 pushes here)
 # ---------------------------------------------------------------------------
 imageRegistry: ghcr.io/moiraweave-labs
