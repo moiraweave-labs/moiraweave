@@ -15,7 +15,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from moiraweave_shared.schemas import PipelineJobMessage
-from moiraweave_shared.streams import CONSUMER_GROUP as _CONSUMER_GROUP, JOB_KEY_PREFIX
+from moiraweave_shared.streams import CONSUMER_GROUP as _CONSUMER_GROUP
+from moiraweave_shared.streams import JOB_KEY_PREFIX
 from pydantic import ValidationError
 from redis.exceptions import ResponseError
 

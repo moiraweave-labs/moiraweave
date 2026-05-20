@@ -11,11 +11,10 @@ Flow under test:
         → assert result contains original payload fields
 """
 
-import pytest
 import httpx
+import pytest
 
 from tests.e2e.conftest import poll_job
-
 
 pytestmark = pytest.mark.e2e
 
@@ -23,6 +22,7 @@ pytestmark = pytest.mark.e2e
 # ---------------------------------------------------------------------------
 # Pipeline discovery
 # ---------------------------------------------------------------------------
+
 
 async def test_pipeline_list_includes_echo(authed_client: httpx.AsyncClient) -> None:
     """The echo pipeline fixture is visible through the API."""
@@ -36,6 +36,7 @@ async def test_pipeline_list_includes_echo(authed_client: httpx.AsyncClient) -> 
 # ---------------------------------------------------------------------------
 # Happy-path job flow
 # ---------------------------------------------------------------------------
+
 
 async def test_submit_echo_job_returns_202(authed_client: httpx.AsyncClient) -> None:
     """Submitting a valid echo job returns 202 Accepted with a job_id."""
@@ -76,6 +77,7 @@ async def test_echo_job_completes_with_input_in_result(
 # Auth & authorization
 # ---------------------------------------------------------------------------
 
+
 async def test_unauthenticated_submit_returns_401(
     http_client: httpx.AsyncClient,
 ) -> None:
@@ -99,6 +101,7 @@ async def test_job_not_found_returns_404(authed_client: httpx.AsyncClient) -> No
 # ---------------------------------------------------------------------------
 # Unknown pipeline
 # ---------------------------------------------------------------------------
+
 
 async def test_submit_to_unknown_pipeline_returns_404(
     authed_client: httpx.AsyncClient,

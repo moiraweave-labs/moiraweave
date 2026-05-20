@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
-
 
 _BASE_URL = os.getenv("E2E_BASE_URL", "http://localhost:8000")
 _USERNAME = os.getenv("E2E_USERNAME", "admin")
@@ -58,7 +57,9 @@ async def auth_token(http_client: httpx.AsyncClient) -> str:
 
 
 @pytest.fixture
-async def authed_client(http_client: httpx.AsyncClient, auth_token: str) -> httpx.AsyncClient:
+async def authed_client(
+    http_client: httpx.AsyncClient, auth_token: str
+) -> httpx.AsyncClient:
     """Return the shared client pre-configured with the auth header."""
     http_client.headers.update({"Authorization": f"Bearer {auth_token}"})
     return http_client
@@ -87,7 +88,6 @@ async def poll_job(
             return data
         if asyncio.get_event_loop().time() >= deadline:
             raise TimeoutError(
-                f"Job {job_id} still pending after {timeout}s. "
-                f"Last status: {data}"
+                f"Job {job_id} still pending after {timeout}s. Last status: {data}"
             )
         await asyncio.sleep(0.5)
