@@ -231,7 +231,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f tests/e2e/docker-compose.e2e.yml \
-            up -d --wait
+            up -d --wait --build
 
       - name: Run E2E tests
         env:

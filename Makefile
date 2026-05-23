@@ -103,7 +103,7 @@ test-e2e:  ## Build mock-step, start E2E stack, run E2E tests, tear down
 	@echo "==> Building mock-step image..."
 	$(E2E_COMPOSE) build mock-step
 	@echo "==> Starting E2E stack (waiting for healthchecks)..."
-	$(E2E_COMPOSE) up -d --wait
+	$(E2E_COMPOSE) up -d --wait --build
 	@echo "==> Running E2E tests..."
 	uv run pytest tests/e2e/ -v --no-cov --import-mode=importlib; \
 	  STATUS=$$?; \
@@ -113,7 +113,7 @@ test-e2e:  ## Build mock-step, start E2E stack, run E2E tests, tear down
 
 test-e2e-up:  ## Start E2E stack only (for iterating on tests manually)
 	$(E2E_COMPOSE) build mock-step
-	$(E2E_COMPOSE) up -d --wait
+	$(E2E_COMPOSE) up -d --wait --build
 
 test-e2e-down:  ## Stop and remove E2E stack
 	$(E2E_COMPOSE) down

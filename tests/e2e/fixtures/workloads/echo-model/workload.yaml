@@ -5,7 +5,7 @@ metadata:
 spec:
   type: model-service
   image: local/mock-step:e2e
-  endpoint: http://mock-step:8080/v2/models/echo-model/infer
+  endpoint: http://mock-step:8080/v2/models/echo/infer
   execution:
     mode: async
     timeoutSeconds: 60
