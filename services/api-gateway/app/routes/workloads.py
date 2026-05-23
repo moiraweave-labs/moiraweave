@@ -113,7 +113,9 @@ async def _authorize_run(
 ) -> StoredRun:
     run = await control_plane.get_run(run_id)
     if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
+        )
     if run.user != current_user.subject:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return run
@@ -221,7 +223,10 @@ async def _probe_deployment_endpoint(
         return None
     parsed = urlparse(deployment.endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return False, f"Deployment endpoint is not a valid HTTP URL: {deployment.endpoint}"
+        return (
+            False,
+            f"Deployment endpoint is not a valid HTTP URL: {deployment.endpoint}",
+        )
     url = _deployment_probe_url(deployment.endpoint)
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:

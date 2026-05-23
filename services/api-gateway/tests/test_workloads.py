@@ -45,7 +45,9 @@ def _deployment_response(endpoint: str | None = None) -> DeploymentResponse:
     )
 
 
-async def _register(auth_client: AsyncClient, name: str = "hermes") -> dict[str, object]:
+async def _register(
+    auth_client: AsyncClient, name: str = "hermes"
+) -> dict[str, object]:
     resp = await auth_client.post("/v1/workloads", json=_agent_manifest(name))
     assert resp.status_code == 201
     return resp.json()
@@ -53,7 +55,10 @@ async def _register(auth_client: AsyncClient, name: str = "hermes") -> dict[str,
 
 def test_deployment_probe_url_defaults_to_health_path() -> None:
     assert _deployment_probe_url("http://hermes:8000") == "http://hermes:8000/health"
-    assert _deployment_probe_url("http://hermes:8000/readyz") == "http://hermes:8000/readyz"
+    assert (
+        _deployment_probe_url("http://hermes:8000/readyz")
+        == "http://hermes:8000/readyz"
+    )
 
 
 async def test_probe_deployment_endpoint_skips_missing_endpoint() -> None:
@@ -115,7 +120,9 @@ async def test_submit_run_queues_dispatch(
     assert stream_entries[0][1]["workload_manifest"]
 
 
-async def test_submit_run_unknown_workload_returns_404(auth_client: AsyncClient) -> None:
+async def test_submit_run_unknown_workload_returns_404(
+    auth_client: AsyncClient,
+) -> None:
     resp = await auth_client.post("/v1/workloads/missing/runs", json={"payload": {}})
     assert resp.status_code == 404
 

@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     )
 
     redis_url: RedisDsn = RedisDsn("redis://redis:6379/0")
-    postgres_dsn: str = "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
+    postgres_dsn: str = (
+        "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
+    )
     log_level: str = "INFO"
 
     # MLflow — inference metrics tracking

@@ -261,7 +261,9 @@ async def test_hermes_adapter_status_cancel_and_artifacts(monkeypatch) -> None:
     )
 
     assert (await adapter.get_status({}))["status"] == "completed"
-    assert (await adapter.get_status({"external_run_id": "run-1"}))["status"] == "completed"
+    assert (await adapter.get_status({"external_run_id": "run-1"}))[
+        "status"
+    ] == "completed"
     assert await adapter.list_artifacts({"external_run_id": "run-1"}) == [
         {"name": "out.txt"}
     ]
@@ -271,9 +273,21 @@ async def test_hermes_adapter_status_cancel_and_artifacts(monkeypatch) -> None:
         "reason": "external_run_id missing",
     }
     assert calls == [
-        ("GET", "http://hermes:8642/health/detailed", {"Authorization": "Bearer server-key"}),
-        ("GET", "http://hermes:8642/v1/runs/run-1", {"Authorization": "Bearer server-key"}),
-        ("GET", "http://hermes:8642/v1/runs/run-1", {"Authorization": "Bearer server-key"}),
+        (
+            "GET",
+            "http://hermes:8642/health/detailed",
+            {"Authorization": "Bearer server-key"},
+        ),
+        (
+            "GET",
+            "http://hermes:8642/v1/runs/run-1",
+            {"Authorization": "Bearer server-key"},
+        ),
+        (
+            "GET",
+            "http://hermes:8642/v1/runs/run-1",
+            {"Authorization": "Bearer server-key"},
+        ),
         (
             "POST",
             "http://hermes:8642/v1/runs/run-1/stop",
@@ -402,7 +416,9 @@ async def test_openclaw_adapter_uses_gateway_rpc(monkeypatch) -> None:
                 "message": "hello",
                 "text": "hello",
                 "agentId": "coder",
-                "idempotencyKey": result["raw"].get("idempotencyKey", calls[-1][1]["idempotencyKey"]),
+                "idempotencyKey": result["raw"].get(
+                    "idempotencyKey", calls[-1][1]["idempotencyKey"]
+                ),
             },
         ),
     ]

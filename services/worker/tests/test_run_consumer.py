@@ -98,7 +98,9 @@ async def test_process_agent_message_records_assistant_response(
     assert artifacts[0].name == "trace.json"
 
 
-async def test_invalid_run_message_goes_to_dead_letter(fake_redis: Any, tmp_path) -> None:
+async def test_invalid_run_message_goes_to_dead_letter(
+    fake_redis: Any, tmp_path
+) -> None:
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
 

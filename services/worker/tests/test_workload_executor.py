@@ -18,7 +18,9 @@ from app.workload_executor import (
 )
 
 
-def _workload(name: str, workload_type: str, **spec_overrides: Any) -> WorkloadDefinition:
+def _workload(
+    name: str, workload_type: str, **spec_overrides: Any
+) -> WorkloadDefinition:
     spec: dict[str, Any] = {"type": workload_type}
     if workload_type != "pipeline":
         spec["image"] = f"ghcr.io/example/{name}:latest"
@@ -71,7 +73,9 @@ async def test_workload_executor_cancels_before_dispatch() -> None:
         )
 
 
-async def test_agent_executor_uses_adapter_and_cancels_after_dispatch(monkeypatch) -> None:
+async def test_agent_executor_uses_adapter_and_cancels_after_dispatch(
+    monkeypatch,
+) -> None:
     calls = {"cancel": 0, "check": 0}
 
     class FakeAdapter:
@@ -97,7 +101,9 @@ async def test_agent_executor_uses_adapter_and_cancels_after_dispatch(monkeypatc
             calls["cancel"] += 1
             return {"accepted": True}
 
-    def fake_build_adapter(workload: WorkloadDefinition, *, timeout_seconds: float) -> FakeAdapter:
+    def fake_build_adapter(
+        workload: WorkloadDefinition, *, timeout_seconds: float
+    ) -> FakeAdapter:
         del workload, timeout_seconds
         return FakeAdapter()
 

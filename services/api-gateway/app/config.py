@@ -32,7 +32,9 @@ class Settings(BaseSettings):
 
     # Control-plane storage. Postgres is the source of truth for workloads,
     # runs, sessions, events, and artifact metadata.
-    postgres_dsn: str = "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
+    postgres_dsn: str = (
+        "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
+    )
 
     # Qdrant — vector store for RAG/search workloads
     qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")

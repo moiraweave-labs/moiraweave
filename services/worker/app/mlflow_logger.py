@@ -13,6 +13,7 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
+
 def _log_run_sync(
     settings: Settings,
     run_id: str,

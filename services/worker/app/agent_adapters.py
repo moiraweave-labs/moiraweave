@@ -246,7 +246,9 @@ class HermesAgentAdapter(HttpAgentAdapter):
                 return _normalize_hermes_result(accepted, status, artifacts)
             await asyncio.sleep(self.workload.spec.agent.pollIntervalSeconds)
 
-        raise TimeoutError(f"Hermes run {external_run_id} did not finish before timeout")
+        raise TimeoutError(
+            f"Hermes run {external_run_id} did not finish before timeout"
+        )
 
     async def get_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         external_run_id = payload.get("external_run_id")
@@ -301,7 +303,9 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
     async def send_message(self, payload: dict[str, Any]) -> dict[str, Any]:
         session_key = _openclaw_session_key(self.workload, payload)
         agent_id = self.workload.spec.agent.agentId or "main"
-        async with _OpenClawRpcClient(self.workload, timeout_seconds=self.timeout_seconds) as rpc:
+        async with _OpenClawRpcClient(
+            self.workload, timeout_seconds=self.timeout_seconds
+        ) as rpc:
             await _openclaw_ensure_session(rpc, session_key, agent_id)
             method = "sessions.send" if rpc.supports("sessions.send") else "chat.send"
             result = await rpc.call(
@@ -312,7 +316,9 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
                     "message": _message_text(payload),
                     "text": _message_text(payload),
                     "agentId": agent_id,
-                    "idempotencyKey": str(payload.get("idempotency_key") or uuid.uuid4()),
+                    "idempotencyKey": str(
+                        payload.get("idempotency_key") or uuid.uuid4()
+                    ),
                 },
             )
         run_id = _first_string(result, "runId", "run_id", "taskId", "id")
@@ -335,7 +341,9 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
         timeout_seconds: float,
     ) -> dict[str, Any]:
         run_id = accepted.get("external_run_id")
-        session_key = str(accepted.get("session_key") or _openclaw_session_key(self.workload, payload))
+        session_key = str(
+            accepted.get("session_key") or _openclaw_session_key(self.workload, payload)
+        )
         if not isinstance(run_id, str) or not run_id:
             return accepted
 
@@ -350,9 +358,13 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
 
         while loop.time() < deadline:
             if await is_cancel_requested():
-                await self.cancel({**payload, "external_run_id": run_id, "session_key": session_key})
+                await self.cancel(
+                    {**payload, "external_run_id": run_id, "session_key": session_key}
+                )
                 return {**accepted, "status": "cancelled"}
-            async with _OpenClawRpcClient(self.workload, timeout_seconds=self.timeout_seconds) as rpc:
+            async with _OpenClawRpcClient(
+                self.workload, timeout_seconds=self.timeout_seconds
+            ) as rpc:
                 status = await _openclaw_status(rpc, run_id, session_key)
             status_value = _status_value(status)
             if status_value != last_status:
@@ -360,7 +372,11 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
                 await emit(
                     "agent.external_status",
                     "OpenClaw run status changed",
-                    {"external_run_id": run_id, "session_key": session_key, "status": status_value},
+                    {
+                        "external_run_id": run_id,
+                        "session_key": session_key,
+                        "status": status_value,
+                    },
                 )
             if status_value in TERMINAL_AGENT_STATUSES:
                 artifacts = await self.list_artifacts(
@@ -373,29 +389,44 @@ class OpenClawAgentAdapter(HttpAgentAdapter):
 
     async def get_status(self, payload: dict[str, Any]) -> dict[str, Any]:
         run_id = payload.get("external_run_id")
-        session_key = str(payload.get("session_key") or _openclaw_session_key(self.workload, payload))
-        async with _OpenClawRpcClient(self.workload, timeout_seconds=self.timeout_seconds) as rpc:
+        session_key = str(
+            payload.get("session_key") or _openclaw_session_key(self.workload, payload)
+        )
+        async with _OpenClawRpcClient(
+            self.workload, timeout_seconds=self.timeout_seconds
+        ) as rpc:
             if isinstance(run_id, str) and run_id:
                 return await _openclaw_status(rpc, run_id, session_key)
             return await rpc.call("health", {})
 
     async def cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
-        session_key = str(payload.get("session_key") or _openclaw_session_key(self.workload, payload))
+        session_key = str(
+            payload.get("session_key") or _openclaw_session_key(self.workload, payload)
+        )
         params: dict[str, Any] = {"key": session_key}
         if payload.get("external_run_id"):
             params["runId"] = payload["external_run_id"]
-        async with _OpenClawRpcClient(self.workload, timeout_seconds=self.timeout_seconds) as rpc:
-            method = "sessions.abort" if rpc.supports("sessions.abort") else "chat.abort"
+        async with _OpenClawRpcClient(
+            self.workload, timeout_seconds=self.timeout_seconds
+        ) as rpc:
+            method = (
+                "sessions.abort" if rpc.supports("sessions.abort") else "chat.abort"
+            )
             result = await rpc.call(method, params)
         return {"accepted": True, "adapter": self.name, "raw": result}
 
     async def list_artifacts(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         params = {
-            "sessionKey": str(payload.get("session_key") or _openclaw_session_key(self.workload, payload)),
+            "sessionKey": str(
+                payload.get("session_key")
+                or _openclaw_session_key(self.workload, payload)
+            ),
         }
         if payload.get("external_run_id"):
             params["runId"] = payload["external_run_id"]
-        async with _OpenClawRpcClient(self.workload, timeout_seconds=self.timeout_seconds) as rpc:
+        async with _OpenClawRpcClient(
+            self.workload, timeout_seconds=self.timeout_seconds
+        ) as rpc:
             if not rpc.supports("artifacts.list"):
                 return []
             result = await rpc.call("artifacts.list", params)
@@ -468,7 +499,9 @@ class _OpenClawRpcClient:
                 continue
             if message.get("ok") is False:
                 error = message.get("error") or {}
-                raise RuntimeError(error.get("message") or f"OpenClaw RPC {method} failed")
+                raise RuntimeError(
+                    error.get("message") or f"OpenClaw RPC {method} failed"
+                )
             payload = message.get("payload")
             return payload if isinstance(payload, dict) else {"response": payload}
 
@@ -507,7 +540,11 @@ def extract_assistant_message(result: Mapping[str, Any]) -> str | None:
 
 def _adapter_name(workload: WorkloadDefinition) -> str:
     if workload.spec.adapter:
-        return "generic-http" if workload.spec.adapter == "generic" else workload.spec.adapter
+        return (
+            "generic-http"
+            if workload.spec.adapter == "generic"
+            else workload.spec.adapter
+        )
     if workload.spec.agent.adapter == "generic":
         return "generic-http"
     return workload.spec.agent.adapter
@@ -605,7 +642,9 @@ def _openclaw_ws_url(workload: WorkloadDefinition) -> str:
     return urlunparse((scheme, parsed.netloc, parsed.path or "/", "", "", ""))
 
 
-def _openclaw_session_key(workload: WorkloadDefinition, payload: Mapping[str, Any]) -> str:
+def _openclaw_session_key(
+    workload: WorkloadDefinition, payload: Mapping[str, Any]
+) -> str:
     agent_id = workload.spec.agent.agentId or "main"
     value = payload.get("session_key") or payload.get("session_id") or "default"
     session = str(value)
