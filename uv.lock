@@ -3968,6 +3968,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "qdrant-client", extra = ["fastembed"] },
     { name = "redis", extra = ["hiredis"] },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -3980,6 +3981,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "qdrant-client", extras = ["fastembed"], specifier = ">=1.12" },
     { name = "redis", extras = ["hiredis"], specifier = ">=5.0" },
+    { name = "websockets", specifier = ">=16" },
 ]
 
 [[package]]

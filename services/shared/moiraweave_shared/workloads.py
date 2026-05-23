@@ -154,11 +154,16 @@ class WorkloadAgentSpec(BaseModel):
     requiredSecrets: list[str] = Field(default_factory=list)
     exposedChannels: list[str] = Field(default_factory=lambda: ["ui", "api"])
     externalOwnedChannels: list[str] = Field(default_factory=list)
+    authTokenEnv: str | None = None
+    agentId: str | None = None
+    model: str | None = None
+    instructions: str | None = None
     messagePath: str | None = None
     statusPath: str | None = None
     cancelPath: str | None = None
     artifactsPath: str | None = None
     dispatchTimeoutSeconds: float = Field(default=30.0, ge=0.1)
+    pollIntervalSeconds: float = Field(default=2.0, ge=0.1)
 
     @field_validator("workspaceMount")
     @classmethod

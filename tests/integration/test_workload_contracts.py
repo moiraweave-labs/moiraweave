@@ -24,6 +24,10 @@ def test_agent_spec_defaults_and_overrides() -> None:
                     "capabilities": ["chat", "tools"],
                     "workspaceMount": "/workspace",
                     "exposedChannels": ["ui", "telegram"],
+                    "authTokenEnv": "HERMES_API_SERVER_KEY",
+                    "model": "hermes-agent",
+                    "instructions": "Keep responses operational.",
+                    "pollIntervalSeconds": 1.5,
                 },
             },
         }
@@ -31,6 +35,10 @@ def test_agent_spec_defaults_and_overrides() -> None:
 
     assert workload.spec.agent.adapter == "hermes"
     assert workload.spec.agent.dispatchTimeoutSeconds == 30.0
+    assert workload.spec.agent.pollIntervalSeconds == 1.5
+    assert workload.spec.agent.authTokenEnv == "HERMES_API_SERVER_KEY"
+    assert workload.spec.agent.model == "hermes-agent"
+    assert workload.spec.agent.instructions == "Keep responses operational."
     assert workload.spec.agent.workspaceMount == "/workspace"
     assert "telegram" in workload.spec.agent.exposedChannels
 

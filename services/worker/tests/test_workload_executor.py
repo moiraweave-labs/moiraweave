@@ -80,6 +80,18 @@ async def test_agent_executor_uses_adapter_and_cancels_after_dispatch(monkeypatc
         async def send_message(self, payload: dict[str, Any]) -> dict[str, Any]:
             return {"response": payload["message"], "adapter": self.name}
 
+        async def wait_for_completion(
+            self,
+            payload: dict[str, Any],
+            accepted: dict[str, Any],
+            *,
+            emit: Any,
+            is_cancel_requested: Any,
+            timeout_seconds: float,
+        ) -> dict[str, Any]:
+            del payload, emit, is_cancel_requested, timeout_seconds
+            return accepted
+
         async def cancel(self, payload: dict[str, Any]) -> dict[str, Any]:
             del payload
             calls["cancel"] += 1

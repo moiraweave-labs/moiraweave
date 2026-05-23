@@ -148,10 +148,17 @@ class AgentExecutor:
                 "session_id": payload.get("session_id"),
             },
         )
-        data = await adapter.send_message(payload)
+        accepted = await adapter.send_message(payload)
+        data = await adapter.wait_for_completion(
+            payload,
+            accepted,
+            emit=emit,
+            is_cancel_requested=is_cancel_requested,
+            timeout_seconds=float(self._workload.spec.execution.timeoutSeconds),
+        )
 
         if await is_cancel_requested():
-            await adapter.cancel(payload)
+            await adapter.cancel({**payload, **data})
             raise RunCancelledError("Agent run canceled after runtime call")
         return data if isinstance(data, dict) else {"response": data}
 
