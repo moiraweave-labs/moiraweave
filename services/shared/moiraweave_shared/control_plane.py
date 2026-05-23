@@ -147,6 +147,15 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def _pg_timestamp(value: str | datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
 def _json_value(value: Any) -> Any:
     if value is None:
         return None
@@ -324,9 +333,7 @@ class ControlPlaneRepository(Protocol):
         created_at: str,
     ) -> StoredAgentSession: ...
 
-    async def get_agent_session(
-        self, session_id: str
-    ) -> StoredAgentSession | None: ...
+    async def get_agent_session(self, session_id: str) -> StoredAgentSession | None: ...
 
     async def list_agent_sessions(
         self, agent_name: str, user: str
@@ -342,7 +349,9 @@ class ControlPlaneRepository(Protocol):
         created_at: str,
     ) -> StoredAgentMessage: ...
 
-    async def list_agent_messages(self, session_id: str) -> list[StoredAgentMessage]: ...
+    async def list_agent_messages(
+        self, session_id: str
+    ) -> list[StoredAgentMessage]: ...
 
     async def upsert_deployment(
         self,
@@ -554,9 +563,7 @@ class InMemoryControlPlaneRepository:
         self.sessions[session_id] = session
         return session
 
-    async def get_agent_session(
-        self, session_id: str
-    ) -> StoredAgentSession | None:
+    async def get_agent_session(self, session_id: str) -> StoredAgentSession | None:
         return self.sessions.get(session_id)
 
     async def list_agent_sessions(
@@ -738,7 +745,7 @@ class PostgresControlPlaneRepository:
     async def upsert_workload(
         self, workload: WorkloadDefinition, user: str, *, now: str | None = None
     ) -> None:
-        now = now or utc_now_iso()
+        timestamp = _pg_timestamp(now or utc_now_iso())
         await self.pool.execute(
             """
             INSERT INTO workloads (name, manifest, user_subject, created_at, updated_at)
@@ -751,13 +758,11 @@ class PostgresControlPlaneRepository:
             workload.metadata.name,
             json.dumps(workload.to_manifest()),
             user,
-            now,
+            timestamp,
         )
 
     async def list_workloads(self) -> list[WorkloadDefinition]:
-        rows = await self.pool.fetch(
-            "SELECT manifest FROM workloads ORDER BY name ASC"
-        )
+        rows = await self.pool.fetch("SELECT manifest FROM workloads ORDER BY name ASC")
         return [
             WorkloadDefinition.model_validate(_json_dict(row["manifest"]))
             for row in rows
@@ -802,7 +807,7 @@ class PostgresControlPlaneRepository:
             user,
             json.dumps(payload),
             session_id,
-            created_at,
+            _pg_timestamp(created_at),
         )
         return _run_from_row(row)
 
@@ -871,10 +876,10 @@ class PostgresControlPlaneRepository:
         if error is not None:
             add("error", error)
         if heartbeat_at is not None:
-            add("heartbeat_at", heartbeat_at, "::timestamptz")
+            add("heartbeat_at", _pg_timestamp(heartbeat_at), "::timestamptz")
         if completed_at is not None:
-            add("completed_at", completed_at, "::timestamptz")
-        add("updated_at", updated_at or utc_now_iso(), "::timestamptz")
+            add("completed_at", _pg_timestamp(completed_at), "::timestamptz")
+        add("updated_at", _pg_timestamp(updated_at or utc_now_iso()), "::timestamptz")
 
         row = await self.pool.fetchrow(
             f"""
@@ -905,7 +910,7 @@ class PostgresControlPlaneRepository:
             RETURNING id::text, run_id::text, timestamp, type, message, data
             """,
             run_id,
-            timestamp or utc_now_iso(),
+            _pg_timestamp(timestamp or utc_now_iso()),
             event_type,
             message,
             json.dumps(data or {}),
@@ -955,7 +960,7 @@ class PostgresControlPlaneRepository:
             item.uri,
             item.content_type,
             item.size_bytes,
-            item.created_at,
+            _pg_timestamp(item.created_at),
             json.dumps(item.metadata),
         )
         return _artifact_from_row(row)
@@ -999,13 +1004,11 @@ class PostgresControlPlaneRepository:
             agent_name,
             user,
             json.dumps(metadata or {}),
-            created_at,
+            _pg_timestamp(created_at),
         )
         return _session_from_row(row)
 
-    async def get_agent_session(
-        self, session_id: str
-    ) -> StoredAgentSession | None:
+    async def get_agent_session(self, session_id: str) -> StoredAgentSession | None:
         row = await self.pool.fetchrow(
             """
             SELECT session_id::text, agent_name, user_subject, status,
@@ -1052,7 +1055,7 @@ class PostgresControlPlaneRepository:
             role,
             message,
             json.dumps(context or {}),
-            created_at,
+            _pg_timestamp(created_at),
         )
         return _message_from_row(row)
 
@@ -1080,7 +1083,7 @@ class PostgresControlPlaneRepository:
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
     ) -> StoredDeployment:
-        timestamp = now or utc_now_iso()
+        timestamp = _pg_timestamp(now or utc_now_iso())
         row = await self.pool.fetchrow(
             """
             INSERT INTO deployments (
@@ -1176,7 +1179,7 @@ class PostgresControlPlaneRepository:
             message,
             user,
             json.dumps(metadata or {}),
-            created_at,
+            _pg_timestamp(created_at),
         )
         return _channel_message_from_row(row)
 
@@ -1193,7 +1196,7 @@ class PostgresControlPlaneRepository:
                 AND COALESCE(heartbeat_at, updated_at, created_at) < $2::timestamptz
             """,
             list(statuses),
-            before,
+            _pg_timestamp(before),
         )
         return [_run_from_row(row) for row in rows]
 
