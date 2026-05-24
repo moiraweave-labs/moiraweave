@@ -94,6 +94,7 @@ jobs:
       - name: Helm lint — moiraweave chart
         run: |
           curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm dependency build infra/helm/moiraweave
           helm lint infra/helm/moiraweave
           helm template moiraweave infra/helm/moiraweave \
             -f tests/helm/values-workloads.yaml \
