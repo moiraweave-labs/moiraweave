@@ -106,6 +106,7 @@ jobs:
             -f tests/helm/values-workloads.yaml \
             >/tmp/moiraweave-workloads.yaml
           grep -q "name: hermes" /tmp/moiraweave-workloads.yaml
+          grep -q "name: openclaw" /tmp/moiraweave-workloads.yaml
 
       - name: YAML lint — infra/k8s
         run: uv run yamllint -d relaxed infra/k8s/

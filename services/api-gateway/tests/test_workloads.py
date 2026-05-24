@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from moiraweave_shared.streams import RUN_STREAM
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from moiraweave_shared.control_plane import InMemoryControlPlaneRepository
 
 
-def _agent_manifest(name: str = "hermes") -> dict[str, object]:
+def _agent_manifest(name: str = "hermes") -> dict[str, Any]:
     return {
         "apiVersion": "moiraweave.io/v1alpha1",
         "kind": "Workload",
@@ -285,6 +285,33 @@ async def test_agent_session_message_creates_run(
     assert history.json()[0]["message"] == "continue"
 
 
+async def test_multiple_agent_workloads_have_independent_sessions(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client, "hermes")
+    openclaw = _agent_manifest("openclaw")
+    openclaw["spec"]["image"] = "ghcr.io/openclaw/openclaw:latest"
+    openclaw["spec"]["ports"] = [{"name": "gateway", "port": 18789}]
+    openclaw["spec"]["agent"] = {"adapter": "openclaw", "agentId": "main"}
+
+    register_openclaw = await auth_client.post("/v1/workloads", json=openclaw)
+    assert register_openclaw.status_code == 201
+
+    workloads = await auth_client.get("/v1/workloads")
+    assert workloads.status_code == 200
+    names = {item["name"] for item in workloads.json()}
+    assert {"hermes", "openclaw"} <= names
+
+    hermes_session = await auth_client.post("/v1/agents/hermes/sessions", json={})
+    openclaw_session = await auth_client.post("/v1/agents/openclaw/sessions", json={})
+
+    assert hermes_session.status_code == 201
+    assert openclaw_session.status_code == 201
+    assert hermes_session.json()["agent_name"] == "hermes"
+    assert openclaw_session.json()["agent_name"] == "openclaw"
+    assert hermes_session.json()["session_id"] != openclaw_session.json()["session_id"]
+
+
 async def test_deployment_record_and_workload_health(auth_client: AsyncClient) -> None:
     await _register(auth_client)
 
@@ -338,6 +365,32 @@ async def test_workload_health_uses_endpoint_probe(
     assert health.status_code == 200
     assert health.json()["status"] == "degraded"
     assert health.json()["reason"] == "runtime is not reachable"
+
+
+async def test_external_agent_deployment_record_is_supported(
+    auth_client: AsyncClient,
+) -> None:
+    external = _agent_manifest("external-hermes")
+    spec = external["spec"]
+    spec.pop("image", None)
+    spec["endpoint"] = "https://agents.example.com/hermes"
+    spec["deployment"] = {"mode": "external"}
+
+    register = await auth_client.post("/v1/workloads", json=external)
+    assert register.status_code == 201
+
+    deploy = await auth_client.post(
+        "/v1/workloads/external-hermes/deployments",
+        json={
+            "target": "external",
+            "status": "running",
+            "endpoint": "https://agents.example.com/hermes",
+        },
+    )
+
+    assert deploy.status_code == 201
+    assert deploy.json()["target"] == "external"
+    assert deploy.json()["endpoint"] == "https://agents.example.com/hermes"
 
 
 async def test_channel_message_creates_session_run_and_audit_record(

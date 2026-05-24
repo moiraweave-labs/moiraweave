@@ -86,7 +86,7 @@ class AgentMessageResponse(BaseModel):
 
 
 class DeploymentRequest(BaseModel):
-    target: str = Field(pattern="^(local|kubernetes|k8s)$")
+    target: str = Field(pattern="^(local|kubernetes|k8s|external)$")
     status: str = "planned"
     endpoint: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

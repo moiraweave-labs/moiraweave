@@ -95,6 +95,7 @@ asyncio_mode = "auto"
 addopts = "--cov=services --cov-report=term-missing --cov-report=xml --import-mode=importlib --ignore=tests/e2e"
 markers = [
     "e2e: end-to-end tests that require the docker-compose stack (run via make test-e2e)",
+    "real_agent: optional tests that require live Hermes/OpenClaw runtime endpoints",
 ]
 
 

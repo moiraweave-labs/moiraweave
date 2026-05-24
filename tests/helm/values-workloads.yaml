@@ -29,6 +29,35 @@ workloads:
       adapter: hermes
       authTokenEnv: HERMES_API_SERVER_KEY
       workspaceMount: /workspace
+  openclaw:
+    enabled: true
+    type: agent-service
+    image: ghcr.io/openclaw/openclaw:latest
+    deployment:
+      mode: managed
+      targets:
+        - local
+        - kubernetes
+      serviceName: openclaw
+      replicas: 1
+    execution:
+      mode: session
+      timeoutSeconds: 172800
+    ports:
+      - name: gateway
+        port: 18789
+    env:
+      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN}"
+    secrets:
+      - OPENCLAW_GATEWAY_TOKEN
+    persistence:
+      enabled: true
+      mountPath: /workspace
+    agent:
+      adapter: openclaw
+      authTokenEnv: OPENCLAW_GATEWAY_TOKEN
+      agentId: main
+      workspaceMount: /workspace
   external-hermes:
     enabled: false
     type: agent-service

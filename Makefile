@@ -203,6 +203,7 @@ helm-monitoring-install:  ## Install the monitoring stack
 	helm upgrade --install moiraweave-monitoring $(HELM_MONITORING_CHART) \
 		--namespace $(HELM_MONITORING_NS) --create-namespace \
 		-f $(HELM_MONITORING_VALUES)
+	kubectl apply -f infra/k8s/monitoring/
 
 helm-monitoring-upgrade:  ## Upgrade the monitoring stack
 	$(MAKE) helm-monitoring-install
