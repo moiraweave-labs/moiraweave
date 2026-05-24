@@ -1,14 +1,15 @@
-# MoiraWeave Core
+# MoiraWeave
 
-[![CI](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/ci.yml)
-[![Release Please](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/release.yml)
-[![Publish to PyPI](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave-core/actions/workflows/publish.yml)
+[![CI](https://github.com/moiraweave-labs/moiraweave/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave/actions/workflows/ci.yml)
+[![Release Please](https://github.com/moiraweave-labs/moiraweave/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave/actions/workflows/release.yml)
+[![Publish to PyPI](https://github.com/moiraweave-labs/moiraweave/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/moiraweave-labs/moiraweave/actions/workflows/publish.yml)
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
 [![Docs](https://img.shields.io/badge/docs-live-blue)](https://moiraweave-labs.github.io/moiraweave-docs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](pyproject.toml)
 
-Runtime and infrastructure repository for the MoiraWeave self-hosted AI
-workload and agent operations platform.
+Self-hosted AI workload and agent operations platform. MoiraWeave gives teams a
+single control plane to deploy, chat with, observe, cancel, and operate agents,
+model services, and pipelines.
 
 ## Scope
 
@@ -16,7 +17,7 @@ This repository owns platform runtime capabilities, not customer business logic.
 
 ### Included
 
-- `services/`: API gateway, worker, shared runtime package, and step SDK
+- `services/`: API gateway, worker, shared runtime package, adapters, and step SDK
 - `infra/`: Helm, Kubernetes, kind, and Terraform assets
 - `monitoring/`: observability assets and dashboards
 - `tests/`: integration and platform-level validation
@@ -37,12 +38,15 @@ and configuration semantics.
 
 You usually do not need to clone this repository directly.
 
-Use the CLI instead:
+Use the CLI instead. The fastest local path is:
 
 1. `uv tool install moiraweave-cli`
-2. `moira init`
-3. Author `workload.yaml` manifests in `.moiraweave/workloads/`
-4. Deploy local or Kubernetes workloads with `moira deploy local|k8s`
+2. `moira up`
+3. Open `http://localhost:3000`
+
+`moira up` initializes a workspace if needed, creates a no-secret demo agent
+when there are no workloads, starts API, worker, Postgres, Redis, Qdrant, UI,
+and workload services, then registers deployment records.
 
 ## Local development
 
@@ -59,7 +63,8 @@ make ci
 
 ## Repository model
 
-`docker-compose.yml` is intentionally generic. Workload-specific runtimes should be configured in the user workspace, not embedded in core.
+`docker-compose.yml` is intentionally generic. Workload-specific runtimes should
+be configured in the user workspace, not embedded in the platform runtime.
 
 ## Related repositories
 

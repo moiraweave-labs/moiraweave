@@ -1,4 +1,4 @@
-# Build context: moiraweave-core repo root
+# Build context: moiraweave repo root
 # so we can copy the step-sdk package from services/step-sdk/.
 FROM python:3.13-slim
 

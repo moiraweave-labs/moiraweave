@@ -14,7 +14,7 @@ resolution-markers = [
 [manifest]
 members = [
     "api-gateway",
-    "moiraweave-core",
+    "moiraweave",
     "moiraweave-drift-detector",
     "moiraweave-shared",
     "moiraweave-step-sdk",
@@ -1954,7 +1954,7 @@ wheels = [
 ]
 
 [[package]]
-name = "moiraweave-core"
+name = "moiraweave"
 version = "0.1.1"
 source = { virtual = "." }
 

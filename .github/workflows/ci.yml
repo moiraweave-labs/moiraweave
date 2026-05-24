@@ -1,6 +1,6 @@
 # .github/workflows/ci.yml
 #
-# CI/CD pipeline for MoiraWeave MLOps.
+# CI/CD for the MoiraWeave AI workload and agent operations platform.
 #
 # Jobs:
 #   1. lint-test   — ruff + mypy + pytest (all branches & PRs)
@@ -37,7 +37,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/moiraweave-labs/moiraweave-core
+  IMAGE_PREFIX: ghcr.io/moiraweave-labs/moiraweave
   PYTHON_VERSION: "3.13"
 
 # ---------------------------------------------------------------------------
