@@ -94,6 +94,8 @@ jobs:
       - name: Helm lint — moiraweave chart
         run: |
           curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant-helm https://qdrant.github.io/qdrant-helm
           helm dependency build infra/helm/moiraweave
           helm lint infra/helm/moiraweave
           helm template moiraweave infra/helm/moiraweave \
