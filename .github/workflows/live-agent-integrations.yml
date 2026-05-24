@@ -1,0 +1,58 @@
+name: Live Agent Integrations
+
+on:
+  workflow_dispatch:
+    inputs:
+      hermes_url:
+        description: "Hermes Agent API base URL"
+        required: false
+        type: string
+      openclaw_url:
+        description: "OpenClaw Gateway base URL"
+        required: false
+        type: string
+      openclaw_agent_id:
+        description: "OpenClaw agent id"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  live-agent-tests:
+    name: Hermes/OpenClaw live runtime tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-packages
+
+      - name: Run live agent adapter tests
+        env:
+          MOIRAWEAVE_REAL_AGENT_TESTS: "1"
+          MOIRAWEAVE_REAL_HERMES_URL: ${{ inputs.hermes_url }}
+          MOIRAWEAVE_REAL_HERMES_AUTH_TOKEN_ENV: HERMES_API_SERVER_KEY
+          MOIRAWEAVE_REAL_OPENCLAW_URL: ${{ inputs.openclaw_url }}
+          MOIRAWEAVE_REAL_OPENCLAW_AGENT_ID: ${{ inputs.openclaw_agent_id }}
+          MOIRAWEAVE_REAL_OPENCLAW_AUTH_TOKEN_ENV: OPENCLAW_GATEWAY_TOKEN
+          HERMES_API_SERVER_KEY: ${{ secrets.HERMES_API_SERVER_KEY }}
+          OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
+        run: >
+          uv run pytest services/worker/tests/test_real_agent_runtimes.py
+          --no-cov -q
