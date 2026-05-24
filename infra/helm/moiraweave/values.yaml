@@ -27,7 +27,7 @@ imageRegistry: ghcr.io/moiraweave-labs
 apiGateway:
   image:
     repository: ghcr.io/moiraweave-labs/moiraweave-core/api-gateway
-    tag: sha-2d93ffe
+    tag: sha-b7b967b
     pullPolicy: IfNotPresent
   replicaCount: 2
   service:
@@ -104,7 +104,7 @@ apiGateway:
 worker:
   image:
     repository: ghcr.io/moiraweave-labs/moiraweave-core/worker
-    tag: sha-2d93ffe
+    tag: sha-b7b967b
     pullPolicy: IfNotPresent
   replicaCount: 1
   resources:
