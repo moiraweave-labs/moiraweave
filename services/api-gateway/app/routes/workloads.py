@@ -766,6 +766,36 @@ async def _authorize_agent_session(
     return session
 
 
+def _validate_agent_channel(workload: WorkloadDefinition, channel: str) -> str:
+    normalized = channel.strip().lower()
+    if not normalized:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Channel cannot be empty",
+        )
+
+    agent = workload.spec.agent
+    if normalized in set(agent.externalOwnedChannels):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Channel {normalized!r} is owned by the agent runtime. "
+                "Use the runtime connector directly and monitor it from MoiraWeave."
+            ),
+        )
+    if normalized not in set(agent.exposedChannels):
+        allowed = ", ".join(agent.exposedChannels) or "none"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Channel {normalized!r} is not exposed by workload "
+                f"{workload.metadata.name!r}. Add it to spec.agent.exposedChannels. "
+                f"Allowed channels: {allowed}."
+            ),
+        )
+    return normalized
+
+
 def _deployment_probe_url(endpoint: str) -> str:
     parsed = urlparse(endpoint)
     if parsed.path and parsed.path != "/":
@@ -1640,6 +1670,7 @@ async def post_channel_agent_message(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Workload {name!r} is not an agent-service",
         )
+    channel = _validate_agent_channel(workload, channel)
 
     session_id = body.session_id
     if session_id is None:

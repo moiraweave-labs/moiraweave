@@ -202,6 +202,20 @@ class WorkloadAgentSpec(BaseModel):
             raise ValueError("agent.workspaceMount must be absolute")
         return value
 
+    @field_validator("exposedChannels", "externalOwnedChannels")
+    @classmethod
+    def _normalize_channels(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for channel in value:
+            cleaned = str(channel).strip().lower()
+            if not cleaned:
+                raise ValueError("agent channels cannot be empty")
+            if cleaned not in seen:
+                seen.add(cleaned)
+                normalized.append(cleaned)
+        return normalized
+
 
 class WorkloadSpec(BaseModel):
     """Runtime and deployment intent for a workload."""

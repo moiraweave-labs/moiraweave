@@ -633,7 +633,9 @@ async def test_channel_message_creates_session_run_and_audit_record(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
 ) -> None:
-    await _register(auth_client)
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "telegram"]}
+    assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
 
     resp = await auth_client.post(
         "/v1/channels/telegram/agents/hermes/messages",
@@ -652,6 +654,39 @@ async def test_channel_message_creates_session_run_and_audit_record(
     assert run.session_id == body["session_id"]
     assert control_plane.channel_messages[0].channel == "telegram"
     assert control_plane.channel_messages[0].external_user_id == "telegram-user-1"
+
+
+async def test_channel_message_requires_declared_agent_channel(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/channels/telegram/agents/hermes/messages",
+        json={"external_user_id": "telegram-user-1", "message": "hello"},
+    )
+
+    assert resp.status_code == 400
+    assert "spec.agent.exposedChannels" in resp.json()["detail"]
+
+
+async def test_channel_message_rejects_runtime_owned_channel(
+    auth_client: AsyncClient,
+) -> None:
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {
+        "exposedChannels": ["ui", "api"],
+        "externalOwnedChannels": ["telegram"],
+    }
+    assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/channels/telegram/agents/hermes/messages",
+        json={"external_user_id": "telegram-user-1", "message": "hello"},
+    )
+
+    assert resp.status_code == 409
+    assert "owned by the agent runtime" in resp.json()["detail"]
 
 
 async def test_agent_session_health_reports_latest_run(

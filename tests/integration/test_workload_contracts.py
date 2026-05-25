@@ -45,6 +45,27 @@ def test_agent_spec_defaults_and_overrides() -> None:
     assert workload.spec.deployment.targets == ["local", "kubernetes"]
 
 
+def test_agent_channels_are_normalized_and_deduplicated() -> None:
+    workload = WorkloadDefinition.model_validate(
+        {
+            "apiVersion": "moiraweave.io/v1alpha1",
+            "kind": "Workload",
+            "metadata": {"name": "agent"},
+            "spec": {
+                "type": "agent-service",
+                "image": "ghcr.io/example/agent:latest",
+                "agent": {
+                    "exposedChannels": ["UI", "telegram", "Telegram"],
+                    "externalOwnedChannels": ["Slack", " slack "],
+                },
+            },
+        }
+    )
+
+    assert workload.spec.agent.exposedChannels == ["ui", "telegram"]
+    assert workload.spec.agent.externalOwnedChannels == ["slack"]
+
+
 def test_external_agent_requires_endpoint_not_image() -> None:
     workload = WorkloadDefinition.model_validate(
         {
