@@ -1941,14 +1941,6 @@ async def post_agent_message(
         )
     await _authorize_agent_session(name, session_id, control_plane, current_user)
 
-    created_at = utc_now_iso()
-    message = await control_plane.append_agent_message(
-        session_id,
-        "user",
-        body.message,
-        context=body.context,
-        created_at=created_at,
-    )
     run = await _create_run(
         redis,
         control_plane,
@@ -1960,6 +1952,14 @@ async def post_agent_message(
         },
         current_user.subject,
         session_id=session_id,
+    )
+    created_at = utc_now_iso()
+    message = await control_plane.append_agent_message(
+        session_id,
+        "user",
+        body.message,
+        context={**body.context, "run_id": run.run_id},
+        created_at=created_at,
     )
     return AgentMessageResponse(
         message_id=message.message_id,
@@ -2009,18 +2009,11 @@ async def post_channel_agent_message(
     else:
         await _authorize_agent_session(name, session_id, control_plane, current_user)
 
-    created_at = utc_now_iso()
-    message = await control_plane.append_agent_message(
-        session_id,
-        "user",
-        body.message,
-        context={
-            "channel": channel,
-            "external_user_id": body.external_user_id,
-            **body.metadata,
-        },
-        created_at=created_at,
-    )
+    message_context = {
+        "channel": channel,
+        "external_user_id": body.external_user_id,
+        **body.metadata,
+    }
     run = await _create_run(
         redis,
         control_plane,
@@ -2028,14 +2021,18 @@ async def post_channel_agent_message(
         {
             "session_id": session_id,
             "message": body.message,
-            "context": {
-                "channel": channel,
-                "external_user_id": body.external_user_id,
-                **body.metadata,
-            },
+            "context": message_context,
         },
         current_user.subject,
         session_id=session_id,
+    )
+    created_at = utc_now_iso()
+    message = await control_plane.append_agent_message(
+        session_id,
+        "user",
+        body.message,
+        context={**message_context, "run_id": run.run_id},
+        created_at=created_at,
     )
     await control_plane.record_channel_message(
         channel,

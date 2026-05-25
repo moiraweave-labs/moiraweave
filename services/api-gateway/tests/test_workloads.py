@@ -766,8 +766,36 @@ async def test_channel_message_creates_session_run_and_audit_record(
     run = await control_plane.get_run(body["run_id"])
     assert run is not None
     assert run.session_id == body["session_id"]
+    messages = await control_plane.list_agent_messages(body["session_id"])
+    assert messages[0].context["run_id"] == body["run_id"]
     assert control_plane.channel_messages[0].channel == "telegram"
     assert control_plane.channel_messages[0].external_user_id == "telegram-user-1"
+
+
+async def test_duplicate_agent_messages_keep_distinct_run_links(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+    session_resp = await auth_client.post("/v1/agents/hermes/sessions", json={})
+    session_id = session_resp.json()["session_id"]
+
+    first = await auth_client.post(
+        f"/v1/agents/hermes/sessions/{session_id}/messages",
+        json={"message": "repeatable prompt"},
+    )
+    second = await auth_client.post(
+        f"/v1/agents/hermes/sessions/{session_id}/messages",
+        json={"message": "repeatable prompt"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    history = await auth_client.get(f"/v1/agents/hermes/sessions/{session_id}/messages")
+
+    assert history.status_code == 200
+    run_ids = [item["run_id"] for item in history.json()]
+    assert run_ids == [first.json()["run_id"], second.json()["run_id"]]
+    assert run_ids[0] != run_ids[1]
 
 
 async def test_channel_message_requires_declared_agent_channel(
