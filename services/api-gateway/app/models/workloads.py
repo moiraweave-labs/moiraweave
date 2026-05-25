@@ -105,6 +105,7 @@ class PreflightResponse(BaseModel):
     target: str
     status: str = Field(pattern="^(passed|warning|failed)$")
     checks: list[PreflightCheck]
+    recommendations: list[str] = Field(default_factory=list)
 
 
 class SecretInventoryItem(BaseModel):
@@ -225,6 +226,7 @@ class WorkloadHealthResponse(BaseModel):
     status: str
     reason: str
     deployments: list[DeploymentResponse] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
 
 
 class AgentSessionHealthResponse(BaseModel):

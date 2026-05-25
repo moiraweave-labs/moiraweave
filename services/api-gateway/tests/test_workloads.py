@@ -430,6 +430,7 @@ async def test_deployment_record_and_workload_health(auth_client: AsyncClient) -
     unknown = await auth_client.get("/v1/workloads/hermes/health")
     assert unknown.status_code == 200
     assert unknown.json()["status"] == "unknown"
+    assert unknown.json()["recommendations"]
 
     deploy = await auth_client.post(
         "/v1/workloads/hermes/deployments",
@@ -527,6 +528,60 @@ async def test_preflight_reports_secret_warnings(
     assert body["status"] == "warning"
     secrets = next(check for check in body["checks"] if check["name"] == "secrets")
     assert "OPENAI_API_KEY" in secrets["metadata"]["missing"]
+
+
+async def test_preflight_reports_missing_deployment_record(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    deployment_record = next(
+        check for check in body["checks"] if check["name"] == "deployment_record"
+    )
+    assert deployment_record["status"] == "warning"
+    assert "moira deploy local" in deployment_record["remediation"]
+    assert deployment_record["remediation"] in body["recommendations"]
+
+
+async def test_preflight_probes_registered_runtime_endpoint(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _register(auth_client)
+
+    async def _probe(_deployment: object) -> tuple[bool, str]:
+        return True, "runtime is reachable"
+
+    monkeypatch.setattr("app.routes.workloads._probe_deployment_endpoint", _probe)
+    deploy = await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={
+            "target": "local",
+            "status": "running",
+            "endpoint": "http://hermes:8000",
+        },
+    )
+    assert deploy.status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    checks = {check["name"]: check for check in resp.json()["checks"]}
+    assert checks["deployment_record"]["status"] == "passed"
+    assert checks["runtime_reachability"]["status"] == "passed"
+    assert (
+        "http://hermes:8000" in checks["runtime_reachability"]["metadata"]["endpoints"]
+    )
 
 
 async def test_secret_inventory_lists_required_names_without_values(

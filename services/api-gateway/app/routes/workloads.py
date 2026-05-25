@@ -916,12 +916,41 @@ async def _deployment_health_status(
     return "pending", "Deployment exists but is not active yet"
 
 
+def _workload_health_recommendations(
+    status_value: str,
+    deployments: list[DeploymentResponse],
+) -> list[str]:
+    if status_value == "unknown":
+        return [
+            "Generate and apply the workload deployment, then register a deployment record."
+        ]
+    if status_value == "pending":
+        return [
+            "Apply the generated deployment assets, then sync the deployment record status."
+        ]
+    if status_value == "degraded":
+        if any(deployment.endpoint for deployment in deployments):
+            return ["Inspect the runtime endpoint, health path, and workload logs."]
+        return ["Inspect workload logs and sync the deployment record status."]
+    return []
+
+
 def _preflight_status(checks: list[PreflightCheck]) -> str:
     if any(check.status == "failed" for check in checks):
         return "failed"
     if any(check.status == "warning" for check in checks):
         return "warning"
     return "passed"
+
+
+def _preflight_recommendations(checks: list[PreflightCheck]) -> list[str]:
+    recommendations: list[str] = []
+    for check in checks:
+        if check.status == "passed" or not check.remediation:
+            continue
+        if check.remediation not in recommendations:
+            recommendations.append(check.remediation)
+    return recommendations
 
 
 def _is_secret_present(name: str) -> bool:
@@ -983,11 +1012,151 @@ def _secret_inventory_response(
     )
 
 
+def _deployment_target_recommendation(
+    workload: WorkloadDefinition,
+    target: str,
+    env: str,
+) -> str:
+    if workload.spec.deployment.mode == "external" or target == "external":
+        return (
+            "Register the external endpoint with a deployment record after verifying "
+            "the runtime URL and credentials."
+        )
+    if target == "kubernetes":
+        return (
+            f"Run `moira deploy k8s --env {env} --apply --register`, or let CI/a "
+            "deployment controller apply and sync this target."
+        )
+    return (
+        "Run `moira up`, or `moira deploy local --up --register`, then refresh "
+        "Operations."
+    )
+
+
+def _deployment_record_check(
+    workload: WorkloadDefinition,
+    *,
+    target: str,
+    env: str,
+    deployments: list[DeploymentResponse],
+) -> PreflightCheck:
+    target_records = [
+        deployment for deployment in deployments if deployment.target == target
+    ]
+    if not target_records:
+        known_targets = sorted({deployment.target for deployment in deployments})
+        return PreflightCheck(
+            name="deployment_record",
+            status="warning",
+            message=f"No {target} deployment record is registered for this workload.",
+            remediation=_deployment_target_recommendation(workload, target, env),
+            metadata={
+                "target": target,
+                "known_targets": known_targets,
+                "deployment_count": len(deployments),
+            },
+        )
+
+    latest = target_records[0]
+    bad_statuses = {"failed", "lost", "unhealthy"}
+    active_statuses = {"applied", "running", "healthy"}
+    status_value = (
+        "failed"
+        if latest.status in bad_statuses
+        else "passed"
+        if latest.status in active_statuses
+        else "warning"
+    )
+    remediation = None
+    if status_value == "failed":
+        remediation = "Inspect workload logs, runtime health, and deployment events."
+    elif status_value == "warning":
+        remediation = _deployment_target_recommendation(workload, target, env)
+    return PreflightCheck(
+        name="deployment_record",
+        status=status_value,
+        message=(
+            f"Latest {target} deployment record is {latest.status!r}."
+            if status_value != "passed"
+            else f"Latest {target} deployment record is active."
+        ),
+        remediation=remediation,
+        metadata={
+            "target": target,
+            "deployment_id": latest.deployment_id,
+            "status": latest.status,
+            "endpoint": latest.endpoint,
+            "record_count": len(target_records),
+        },
+    )
+
+
+async def _runtime_reachability_check(
+    workload: WorkloadDefinition,
+    *,
+    target: str,
+    deployments: list[DeploymentResponse],
+) -> PreflightCheck | None:
+    candidates = [
+        deployment
+        for deployment in deployments
+        if deployment.target == target and deployment.endpoint
+    ]
+    if not candidates and workload.spec.deployment.mode == "external":
+        endpoint = workload.spec.endpoint
+        if endpoint:
+            candidates = [
+                DeploymentResponse(
+                    deployment_id=str(uuid4()),
+                    workload_name=workload.metadata.name,
+                    target=target,
+                    status="preflight",
+                    user="preflight",
+                    created_at=utc_now_iso(),
+                    endpoint=endpoint,
+                    metadata={},
+                )
+            ]
+    if not candidates:
+        return None
+
+    probes = [
+        probe
+        for probe in [
+            await _probe_deployment_endpoint(deployment) for deployment in candidates
+        ]
+        if probe is not None
+    ]
+    if not probes:
+        return None
+    if any(ok for ok, _reason in probes):
+        return PreflightCheck(
+            name="runtime_reachability",
+            status="passed",
+            message=next(reason for ok, reason in probes if ok),
+            metadata={
+                "target": target,
+                "endpoints": [deployment.endpoint for deployment in candidates],
+            },
+        )
+    return PreflightCheck(
+        name="runtime_reachability",
+        status="warning",
+        message="; ".join(reason for _ok, reason in probes),
+        remediation="Inspect the runtime endpoint, health path, network, and workload logs.",
+        metadata={
+            "target": target,
+            "endpoints": [deployment.endpoint for deployment in candidates],
+        },
+    )
+
+
 async def _run_preflight(
     workload: WorkloadDefinition,
     *,
     target: str,
     env: str,
+    user: str,
     control_plane: ControlPlaneRepository,
     redis: Any,
 ) -> PreflightResponse:
@@ -1023,6 +1192,33 @@ async def _run_preflight(
                 status="failed",
                 message=str(exc.detail),
                 remediation="Adjust spec.deployment.targets or choose another target.",
+            )
+        )
+
+    deployments: list[DeploymentResponse] = []
+    try:
+        deployments = [
+            _deployment_response(deployment)
+            for deployment in await control_plane.list_deployments(
+                user,
+                workload_name=workload.metadata.name,
+            )
+        ]
+        checks.append(
+            _deployment_record_check(
+                workload,
+                target=normalized_target,
+                env=env,
+                deployments=deployments,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        checks.append(
+            PreflightCheck(
+                name="deployment_record",
+                status="failed",
+                message=f"Deployment records could not be read: {exc}",
+                remediation="Check Postgres connectivity and API gateway logs.",
             )
         )
 
@@ -1139,41 +1335,20 @@ async def _run_preflight(
             )
         )
 
-    endpoint = (
-        workload.spec.endpoint if workload.spec.deployment.mode == "external" else None
+    runtime_check = await _runtime_reachability_check(
+        workload,
+        target=normalized_target,
+        deployments=deployments,
     )
-    if endpoint:
-        probe = await _probe_deployment_endpoint(
-            DeploymentResponse(
-                deployment_id=str(uuid4()),
-                workload_name=workload.metadata.name,
-                target=normalized_target,
-                status="preflight",
-                user="preflight",
-                created_at=utc_now_iso(),
-                endpoint=endpoint,
-                metadata={},
-            )
-        )
-        if probe is not None:
-            ok, reason = probe
-            checks.append(
-                PreflightCheck(
-                    name="runtime_reachability",
-                    status="passed" if ok else "warning",
-                    message=reason,
-                    remediation="Deploy the runtime or inspect workload logs."
-                    if not ok
-                    else None,
-                    metadata={"endpoint": endpoint},
-                )
-            )
+    if runtime_check:
+        checks.append(runtime_check)
 
     return PreflightResponse(
         workload_name=workload.metadata.name,
         target=normalized_target,
         status=_preflight_status(checks),
         checks=checks,
+        recommendations=_preflight_recommendations(checks),
     )
 
 
@@ -1320,13 +1495,13 @@ async def workload_preflight(
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> PreflightResponse:
-    del current_user
     settings = get_settings()
     workload = await _get_workload(name, control_plane, settings)
     return await _run_preflight(
         workload,
         target=body.target,
         env=body.env,
+        user=current_user.subject,
         control_plane=control_plane,
         redis=redis,
     )
@@ -1528,6 +1703,7 @@ async def workload_health(
         status=health_status,
         reason=reason,
         deployments=deployments,
+        recommendations=_workload_health_recommendations(health_status, deployments),
     )
 
 
