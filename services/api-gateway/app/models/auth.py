@@ -14,6 +14,13 @@ class TokenData(BaseModel):
     api_key_id: str | None = None
 
 
+class AuthProfile(BaseModel):
+    subject: str
+    role: str
+    credential_type: str
+    api_key_id: str | None = None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

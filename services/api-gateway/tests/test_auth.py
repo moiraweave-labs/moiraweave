@@ -76,6 +76,23 @@ async def test_token_allows_authenticated_request(client: AsyncClient) -> None:
     assert response.status_code in {200, 500}  # 500 if qdrant not running; not 401
 
 
+async def test_me_returns_jwt_profile(client: AsyncClient) -> None:
+    token = _token("operator", "operator")
+
+    response = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "subject": "operator",
+        "role": "operator",
+        "credential_type": "jwt",
+        "api_key_id": None,
+    }
+
+
 async def test_api_key_allows_authenticated_request(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -89,6 +106,27 @@ async def test_api_key_allows_authenticated_request(
     )
 
     assert response.status_code == 200
+
+
+async def test_me_returns_api_key_profile(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOIRA_API_KEYS", "local-dev-key:automation:operator")
+    get_settings.cache_clear()
+
+    response = await client.get(
+        "/auth/me",
+        headers={"Authorization": "Bearer local-dev-key"},
+    )
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["subject"] == "automation"
+    assert body["role"] == "operator"
+    assert body["credential_type"] == "api_key"
+    assert isinstance(body["api_key_id"], str)
+    assert body["api_key_id"] != "local-dev-key"
 
 
 async def test_viewer_cannot_register_workload(client: AsyncClient) -> None:

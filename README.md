@@ -51,6 +51,7 @@ and workload services, then registers deployment records.
 Local development auth uses `DEMO_USERNAME`, `DEMO_PASSWORD`, and `DEMO_ROLE`.
 Automation can use bearer API keys through `MOIRA_API_KEYS`, with comma-separated
 `key:subject:role` entries. Roles are `viewer`, `operator`, and `admin`.
+Clients can resolve the active credential through `GET /auth/me`.
 
 ## Local development
 
