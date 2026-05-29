@@ -7,6 +7,58 @@ The format is inspired by Keep a Changelog, and versions follow SemVer.
 > **Migration notice (2026-05-20)**: This project was previously named `inferflow` and before that `audiomind`.
 > All CLI commands are now under the `moira` entrypoint. No legacy aliases are maintained.
 
+## [0.1.1](https://github.com/moiraweave-labs/moiraweave/compare/v0.1.0...v0.1.1) (2026-05-26)
+
+
+### Features
+
+* add actionable preflight diagnostics ([470451a](https://github.com/moiraweave-labs/moiraweave/commit/470451a9681e5b3266725b9ca4e5d9039d73cab0))
+* add AI workload control plane ([425efd9](https://github.com/moiraweave-labs/moiraweave/commit/425efd9499b1b547e5ec9457316187c0285c658b))
+* add production agent runtime adapters ([5074c1d](https://github.com/moiraweave-labs/moiraweave/commit/5074c1d0373d075f58d341bf0eeaee952160bd9b))
+* add rbac api keys ([9853bd2](https://github.com/moiraweave-labs/moiraweave/commit/9853bd207639a68695128a915af1d5a9714e2acb))
+* add runtime-owned channel templates ([c7844d9](https://github.com/moiraweave-labs/moiraweave/commit/c7844d9587898062d790f2c1d71556d49e123a59))
+* add workload deployment placement ([46f3024](https://github.com/moiraweave-labs/moiraweave/commit/46f302432db3e27f7970bbd11ed3eb96527214fc))
+* add workload secret inventory ([edb2c6e](https://github.com/moiraweave-labs/moiraweave/commit/edb2c6ee994c0f3dc42553e362ff57002bb69e8b))
+* **api:** add GET /v1/pipelines/jobs endpoint to list user jobs ([d80e310](https://github.com/moiraweave-labs/moiraweave/commit/d80e310613f34b1a247e872bfaba905cc72ddf49))
+* **api:** add guided workload ops ([b7b967b](https://github.com/moiraweave-labs/moiraweave/commit/b7b967b1cc8906631c2aac2fff110fc855f65b74))
+* **e2e:** add docker-compose E2E test suite with mock echo step ([3dae142](https://github.com/moiraweave-labs/moiraweave/commit/3dae1423cdf4c90671f7c5e3fcc029c6952486fd))
+* enforce declared agent channels ([a6741ee](https://github.com/moiraweave-labs/moiraweave/commit/a6741ee41dc0fd155bcdc0dddad07d0694c8eb19))
+* expose auth profile ([b5f1b4c](https://github.com/moiraweave-labs/moiraweave/commit/b5f1b4c62229abb2e75a011a139458f7b2d21bbc))
+* expose deployment plans ([9679f92](https://github.com/moiraweave-labs/moiraweave/commit/9679f92ba22b7dc71179cb90c3e62a796a2b6ce7))
+* **helm:** add imagePullSecrets for user step private registries ([e3d74e5](https://github.com/moiraweave-labs/moiraweave/commit/e3d74e5ae34a1ab4badb9e14e1d76df828320b06))
+* **helm:** harden chart with security and production readiness ([b440f9f](https://github.com/moiraweave-labs/moiraweave/commit/b440f9fed1be58b19c15761c59b4600a205c3dc0))
+* list deployment operations ([0d587bd](https://github.com/moiraweave-labs/moiraweave/commit/0d587bd6c35eddd810c13412686b15f26df4e761))
+* probe workload deployment health ([d236ef4](https://github.com/moiraweave-labs/moiraweave/commit/d236ef48c345de8f03af68df91b3040d19e29c26))
+* **release:** add release-please config files and semver tag trigger in CI ([08df326](https://github.com/moiraweave-labs/moiraweave/commit/08df326bc068954a5cd64efa683dddd95cbaabdc))
+* serve local artifact content ([26fbef2](https://github.com/moiraweave-labs/moiraweave/commit/26fbef2962e4a132bb3a2eb07d2003120f3b7e89))
+
+
+### Bug Fixes
+
+* **ci:** pass JWT_SECRET_KEY env to all docker compose steps in e2e job ([1e29b6d](https://github.com/moiraweave-labs/moiraweave/commit/1e29b6d23bbe49bc97565339e2f41a078a6d88a6))
+* coerce postgres timestamps ([f3cf277](https://github.com/moiraweave-labs/moiraweave/commit/f3cf277ba5d585d2073bce5d1637dabe3580eea3))
+* **core:** align stream constants, fix KEDA config, reuse httpx client ([9252753](https://github.com/moiraweave-labs/moiraweave/commit/92527538f836743f53dd6c2b829cfa3c7fcc4124))
+* **core:** remove domain-specific QDRANT_COLLECTION from helm values, fix drift-detector default ([3263e1f](https://github.com/moiraweave-labs/moiraweave/commit/3263e1fb03f1aedfd85f6b065f925f087e3d87db))
+* **core:** remove duplicate field, fix worker job_ttl, clean auth/search routes ([b147ff8](https://github.com/moiraweave-labs/moiraweave/commit/b147ff8ab1a9e71e9c509c44cea1c98d9abac070))
+* **e2e:** apply formatter fixes post-commit ([7902230](https://github.com/moiraweave-labs/moiraweave/commit/7902230197c25203d7468713ada5093fa727ff13))
+* **e2e:** rebuild current compose images ([0cbf40e](https://github.com/moiraweave-labs/moiraweave/commit/0cbf40ee7831d068b2b53838e2efc2299a0dde3e))
+* **e2e:** reliable qdrant healthcheck + log before teardown ([64737dd](https://github.com/moiraweave-labs/moiraweave/commit/64737dd17ce92506365a6ed8c852cfb1cb1db84d))
+* **lint:** apply ruff format to pipeline_runner.py ([2a957bb](https://github.com/moiraweave-labs/moiraweave/commit/2a957bb6a78d8c829229081cb96fa858a4cf8530))
+* **lint:** sort imports in test_pipeline_runner (ruff I001) ([f29934f](https://github.com/moiraweave-labs/moiraweave/commit/f29934f76ca43d8873ca4e07b7cadced50501690))
+* preserve agent message run links ([57b9f77](https://github.com/moiraweave-labs/moiraweave/commit/57b9f77544ee43b5153997ec6c3b618976397717))
+* **worker:** implement input_from routing, add InferResponse validation ([beb466d](https://github.com/moiraweave-labs/moiraweave/commit/beb466d1c383927aaf7dbf9a07458e3771da713b))
+* **worker:** move step timeout to Settings, guard json.loads, add early expire ([08df326](https://github.com/moiraweave-labs/moiraweave/commit/08df326bc068954a5cd64efa683dddd95cbaabdc))
+
+
+### Documentation
+
+* add docs badge linking to moiraweave-labs.github.io ([e66192c](https://github.com/moiraweave-labs/moiraweave/commit/e66192cbd818d5cce578f6ff609a8688a8c3029e))
+* **changelog:** add rebrand migration notice ([a6f0920](https://github.com/moiraweave-labs/moiraweave/commit/a6f0920b9d2852c9fbb256ba89c7deaa3b1bc0f5))
+* describe integrated UI ([71cdbfd](https://github.com/moiraweave-labs/moiraweave/commit/71cdbfd174f82a24f20dbe0fd5d0d1d2a3f8eb5c))
+* **readme:** improve structure, scope, and CI badges ([c293d65](https://github.com/moiraweave-labs/moiraweave/commit/c293d6532f8920c72afc4c845a3bcd47e8eea373))
+* update contributing workload guidance ([07ef770](https://github.com/moiraweave-labs/moiraweave/commit/07ef770471f3ad11ab6c5f3ddcf5f05bd574e336))
+* update renamed repository links ([54a5c19](https://github.com/moiraweave-labs/moiraweave/commit/54a5c19adca3534658bfb05fef9b1ca9875853fd))
+
 ## [0.1.1](https://github.com/moiraweave-labs/moiraweave/compare/v0.1.0...v0.1.1) (2026-05-17)
 
 
