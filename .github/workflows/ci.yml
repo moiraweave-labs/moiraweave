@@ -16,6 +16,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -123,8 +124,8 @@ jobs:
     needs: lint-test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Only build+push on pushes to main or release branches (not PRs).
-    if: github.event_name == 'push'
+    # Build+push on pushes and manual dispatches, never on PRs.
+    if: github.event_name != 'pull_request'
     permissions:
       packages: write            # GHCR push
       contents: read
@@ -203,6 +204,34 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
           category: trivy-${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  # Job 3 — Verify public image pulls
+  # ---------------------------------------------------------------------------
+  public-image-smoke:
+    name: Public image pull smoke
+    needs: build-push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - name: Verify anonymous GHCR pulls
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          for image in \
+            "${IMAGE_PREFIX}/api-gateway:latest" \
+            "${IMAGE_PREFIX}/worker:latest"
+          do
+            echo "Checking anonymous pull metadata for ${image}"
+            if ! docker manifest inspect "${image}" >/dev/null; then
+              echo "::error title=GHCR image is not public::${image} was pushed, but it is not pullable without authentication. Set the package visibility to public in GitHub Packages or publish to a public registry."
+              exit 1
+            fi
+          done
 
   # ---------------------------------------------------------------------------
   # Job 4 — E2E tests (docker-compose stack + pytest)
