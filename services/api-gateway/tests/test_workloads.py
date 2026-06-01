@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from moiraweave_shared.streams import RUN_STREAM
+from moiraweave_shared.streams import CONSUMER_GROUP, RUN_STREAM
 
 from app.models.workloads import DeploymentResponse
 from app.routes.workloads import _deployment_probe_url, _probe_deployment_endpoint
@@ -658,6 +658,47 @@ async def test_preflight_probes_registered_runtime_endpoint(
     assert (
         "http://hermes:8000" in checks["runtime_reachability"]["metadata"]["endpoints"]
     )
+
+
+async def test_preflight_reports_missing_worker_consumer(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    checks = {check["name"]: check for check in resp.json()["checks"]}
+    assert checks["worker_dispatch"]["status"] == "warning"
+    assert "worker" in checks["worker_dispatch"]["remediation"].lower()
+
+
+async def test_preflight_passes_with_worker_consumer(
+    auth_client: AsyncClient,
+    fake_redis: FakeRedis,
+) -> None:
+    await _register(auth_client)
+    await fake_redis.xgroup_create(RUN_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
+    await fake_redis.xadd(RUN_STREAM, {"run_id": "run-worker-check"})
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "worker-test",
+        streams={RUN_STREAM: ">"},
+        count=1,
+    )
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    checks = {check["name"]: check for check in resp.json()["checks"]}
+    assert checks["worker_dispatch"]["status"] == "passed"
+    assert checks["worker_dispatch"]["metadata"]["consumers"] == 1
 
 
 async def test_secret_inventory_lists_required_names_without_values(

@@ -25,7 +25,7 @@ from moiraweave_shared.control_plane import (
     workloads_by_name,
 )
 from moiraweave_shared.schemas import RunMessage
-from moiraweave_shared.streams import RUN_STREAM
+from moiraweave_shared.streams import CONSUMER_GROUP, RUN_STREAM
 from moiraweave_shared.workloads import (
     TERMINAL_RUN_STATUSES,
     RunStateTransitionError,
@@ -33,6 +33,7 @@ from moiraweave_shared.workloads import (
     ensure_run_transition,
     load_workloads,
 )
+from redis.exceptions import ResponseError
 from starlette.responses import FileResponse, StreamingResponse
 
 from app.config import Settings, get_settings
@@ -1233,6 +1234,83 @@ async def _runtime_reachability_check(
     )
 
 
+def _redis_mapping_value(item: dict[Any, Any], key: str, default: Any = None) -> Any:
+    return item.get(key, item.get(key.encode(), default))
+
+
+def _redis_group_name(item: dict[Any, Any]) -> str:
+    value = _redis_mapping_value(item, "name", "")
+    if isinstance(value, bytes):
+        return value.decode()
+    return str(value)
+
+
+async def _worker_dispatch_check(redis: Any) -> PreflightCheck:
+    try:
+        groups = await redis.xinfo_groups(RUN_STREAM)
+    except ResponseError as exc:
+        return PreflightCheck(
+            name="worker_dispatch",
+            status="warning",
+            message=(
+                f"Worker consumer group {CONSUMER_GROUP!r} is not registered on "
+                f"{RUN_STREAM!r}: {exc}"
+            ),
+            remediation="Start the worker service and wait for it to create the run consumer group.",
+            metadata={"stream": RUN_STREAM, "consumer_group": CONSUMER_GROUP},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return PreflightCheck(
+            name="worker_dispatch",
+            status="failed",
+            message=f"Worker dispatch state could not be inspected: {exc}",
+            remediation="Check Redis connectivity and API gateway logs.",
+            metadata={"stream": RUN_STREAM, "consumer_group": CONSUMER_GROUP},
+        )
+
+    group = next(
+        (item for item in groups if _redis_group_name(item) == CONSUMER_GROUP),
+        None,
+    )
+    if group is None:
+        return PreflightCheck(
+            name="worker_dispatch",
+            status="warning",
+            message=f"Worker consumer group {CONSUMER_GROUP!r} is not registered.",
+            remediation="Start the worker service and wait for it to attach to the run queue.",
+            metadata={
+                "stream": RUN_STREAM,
+                "consumer_group": CONSUMER_GROUP,
+                "known_groups": [_redis_group_name(item) for item in groups],
+            },
+        )
+
+    consumers = int(_redis_mapping_value(group, "consumers", 0) or 0)
+    pending = int(_redis_mapping_value(group, "pending", 0) or 0)
+    lag = _redis_mapping_value(group, "lag")
+    metadata = {
+        "stream": RUN_STREAM,
+        "consumer_group": CONSUMER_GROUP,
+        "consumers": consumers,
+        "pending": pending,
+        "lag": lag,
+    }
+    if consumers <= 0:
+        return PreflightCheck(
+            name="worker_dispatch",
+            status="warning",
+            message="Run queue exists, but no worker consumer is attached.",
+            remediation="Start or restart the worker service before submitting long-running work.",
+            metadata=metadata,
+        )
+    return PreflightCheck(
+        name="worker_dispatch",
+        status="passed",
+        message=f"{consumers} worker consumer(s) are attached to the run queue.",
+        metadata=metadata,
+    )
+
+
 async def _run_preflight(
     workload: WorkloadDefinition,
     *,
@@ -1416,6 +1494,8 @@ async def _run_preflight(
                 remediation="Start Redis and restart the API gateway.",
             )
         )
+
+    checks.append(await _worker_dispatch_check(redis))
 
     runtime_check = await _runtime_reachability_check(
         workload,
