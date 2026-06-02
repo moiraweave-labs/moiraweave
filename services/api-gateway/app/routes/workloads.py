@@ -791,6 +791,56 @@ def _deployment_log_commands(
     ]
 
 
+def _deployment_action_commands(
+    action: str,
+    workload: WorkloadDefinition,
+    plan: DeploymentPlanResponse,
+) -> list[str]:
+    if action == "apply":
+        return plan.commands
+    if action == "undeploy":
+        if plan.target == "local":
+            return [
+                "docker compose -f docker-compose.yml -f "
+                ".moiraweave/deploy/docker-compose.workloads.yml down"
+            ]
+        if plan.target == "kubernetes":
+            namespace = workload.spec.deployment.namespace or "moiraweave"
+            return [f"helm uninstall moiraweave --namespace {namespace}"]
+        return [
+            "Remove or stop the external runtime outside MoiraWeave, then sync "
+            "the deployment record."
+        ]
+    return []
+
+
+def _deployment_operation_next_actions(
+    action: str,
+    plan: DeploymentPlanResponse,
+) -> list[str]:
+    if action == "apply":
+        if plan.target == "local":
+            return [
+                "Run the listed commands from the workspace with Docker access.",
+                "After containers start, run Sync or `moira deploy local --register`.",
+            ]
+        if plan.target == "kubernetes":
+            return [
+                "Run the listed commands from CLI, CI, or a deployment controller with kubeconfig.",
+                "After resources apply, run Sync or `moira deploy k8s --register`.",
+            ]
+        return [
+            "Deploy the external runtime in its owner system.",
+            "Register or sync the external deployment record in MoiraWeave.",
+        ]
+    if action == "undeploy":
+        return [
+            "Run the listed commands from an environment with deployment credentials.",
+            "Sync the deployment record as stopped, removed, or external-owned.",
+        ]
+    return []
+
+
 async def _all_workloads(
     control_plane: ControlPlaneRepository, settings: Settings
 ) -> dict[str, WorkloadDefinition]:
@@ -1777,6 +1827,11 @@ async def create_deployment_operation(
             )
         elif body.action in {"apply", "undeploy"}:
             operation_status = "failed"
+            commands = _deployment_action_commands(body.action, workload, plan)
+            next_actions = _deployment_operation_next_actions(body.action, plan)
+            metadata["action_commands"] = commands
+            metadata["next_actions"] = next_actions
+            metadata["blocked_reason"] = "api-gateway-has-no-host-executor"
             events.append(
                 (
                     "operation.blocked",
@@ -1785,8 +1840,9 @@ async def create_deployment_operation(
                         "Docker/Kubernetes credentials."
                     ),
                     {
-                        "commands": plan.commands,
-                        "reason": "api-gateway-has-no-host-executor",
+                        "commands": commands,
+                        "next_actions": next_actions,
+                        "reason": metadata["blocked_reason"],
                     },
                 )
             )

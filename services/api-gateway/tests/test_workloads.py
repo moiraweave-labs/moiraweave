@@ -792,6 +792,46 @@ async def test_deployment_operation_apply_is_blocked_without_controller(
 
     assert resp.status_code == 202
     assert resp.json()["status"] == "failed"
+    assert (
+        resp.json()["metadata"]["blocked_reason"] == "api-gateway-has-no-host-executor"
+    )
+    assert resp.json()["metadata"]["action_commands"] == [
+        "moira deploy local",
+        "docker compose -f docker-compose.yml -f .moiraweave/deploy/docker-compose.workloads.yml up -d",
+        "moira deploy local --register",
+    ]
+    assert "next_actions" in resp.json()["metadata"]
+
+    events = await auth_client.get(
+        f"/v1/deployment-operations/{resp.json()['operation_id']}/events"
+    )
+    assert events.status_code == 200
+    assert events.json()[-1]["type"] == "operation.blocked"
+    assert (
+        events.json()[-1]["data"]["commands"]
+        == resp.json()["metadata"]["action_commands"]
+    )
+
+
+async def test_deployment_operation_undeploy_returns_guidance(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/deployment-operations",
+        json={"action": "undeploy", "workload_name": "hermes", "target": "local"},
+    )
+
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "failed"
+    assert resp.json()["metadata"]["action_commands"] == [
+        "docker compose -f docker-compose.yml -f .moiraweave/deploy/docker-compose.workloads.yml down"
+    ]
+    assert resp.json()["metadata"]["next_actions"] == [
+        "Run the listed commands from an environment with deployment credentials.",
+        "Sync the deployment record as stopped, removed, or external-owned.",
+    ]
 
 
 async def test_deployment_operation_logs_returns_guidance(
