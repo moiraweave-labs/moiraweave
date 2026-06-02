@@ -167,20 +167,27 @@ async def mark_stale_runs(
     stale_runs = await control_plane.find_stale_runs(before=threshold.isoformat())
     now = datetime.now(UTC)
     for run in stale_runs:
-        heartbeat_raw = run.heartbeat_at or run.updated_at or run.created_at
+        latest = await control_plane.get_run(run.run_id)
+        if latest is None or latest.status in TERMINAL_RUN_STATUSES:
+            continue
+        heartbeat_raw = latest.heartbeat_at or latest.updated_at or latest.created_at
         with contextlib.suppress(ValueError):
-            heartbeat = datetime.fromisoformat(heartbeat_raw)
+            heartbeat = datetime.fromisoformat(heartbeat_raw.replace("Z", "+00:00"))
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            if heartbeat >= threshold:
+                continue
             age = int((now - heartbeat).total_seconds())
             completed_at = utc_now_iso()
             await control_plane.update_run(
-                run.run_id,
+                latest.run_id,
                 status="lost",
                 error=f"Heartbeat stale for {age}s",
                 updated_at=completed_at,
                 completed_at=completed_at,
             )
             await control_plane.append_run_event(
-                run.run_id,
+                latest.run_id,
                 "run.lost",
                 "Run marked lost after stale heartbeat",
                 data={"age_seconds": age},
