@@ -270,6 +270,10 @@ async def test_cancel_run_sets_cancel_requested(
     resp = await auth_client.post("/v1/runs/run-cancel/cancel")
     assert resp.status_code == 200
     assert resp.json()["status"] == "cancel_requested"
+    audit = await auth_client.get("/v1/audit-events?action=run.cancel")
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == "run-cancel"
+    assert audit.json()[0]["metadata"]["previous_status"] == "running"
 
 
 async def test_events_and_artifacts_are_returned(
@@ -384,6 +388,12 @@ async def test_artifact_preview_and_download_from_local_storage(
     assert download.status_code == 200
     assert download.content == b'{"ok": true, "kind": "summary"}'
     assert "summary.json" in download.headers["content-disposition"]
+    audit = await auth_client.get(
+        "/v1/audit-events?resource_type=artifact&resource_id=summary-json"
+    )
+    assert audit.status_code == 200
+    actions = {item["action"] for item in audit.json()}
+    assert actions == {"artifact.preview", "artifact.download"}
 
 
 async def test_artifact_preview_rejects_path_traversal(
@@ -442,6 +452,10 @@ async def test_agent_session_message_creates_run(
     assert history.json()[0]["message"] == "continue"
     assert history.json()[0]["run_id"] == run_id
     assert history.json()[0]["run_status"] == "queued"
+    audit = await auth_client.get("/v1/audit-events?action=agent.message")
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == session_id
+    assert audit.json()[0]["metadata"]["run_id"] == run_id
 
 
 async def test_agent_history_includes_latest_event_and_artifact_count(
@@ -778,6 +792,12 @@ async def test_deployment_operation_plan_and_sync(
     assert [item["operation_id"] for item in filtered.json()] == [
         sync.json()["operation_id"]
     ]
+    audit = await auth_client.get(
+        "/v1/audit-events?action=deployment_operation.sync"
+    )
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == sync.json()["operation_id"]
+    assert audit.json()[0]["metadata"]["workload_name"] == "hermes"
 
 
 async def test_deployment_operation_apply_is_blocked_without_controller(
@@ -960,6 +980,11 @@ async def test_channel_message_creates_session_run_and_audit_record(
     assert messages[0].context["run_id"] == body["run_id"]
     assert control_plane.channel_messages[0].channel == "telegram"
     assert control_plane.channel_messages[0].external_user_id == "telegram-user-1"
+    audit = await auth_client.get("/v1/audit-events?action=channel.message")
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == body["session_id"]
+    assert audit.json()[0]["metadata"]["channel"] == "telegram"
+    assert audit.json()[0]["metadata"]["run_id"] == body["run_id"]
 
 
 async def test_duplicate_agent_messages_keep_distinct_run_links(

@@ -163,6 +163,25 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON deployment_operation_events (operation_id, id ASC);
         """,
     ),
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id bigserial PRIMARY KEY,
+            timestamp timestamptz NOT NULL DEFAULT now(),
+            actor_subject text NOT NULL,
+            action text NOT NULL,
+            resource_type text NOT NULL,
+            resource_id text NOT NULL,
+            metadata jsonb NOT NULL DEFAULT '{}'::jsonb
+        );
+
+        CREATE INDEX IF NOT EXISTS audit_events_actor_timestamp_idx
+            ON audit_events (actor_subject, timestamp DESC);
+        CREATE INDEX IF NOT EXISTS audit_events_resource_idx
+            ON audit_events (resource_type, resource_id, timestamp DESC);
+        """,
+    ),
 )
 
 
@@ -304,6 +323,16 @@ class StoredChannelMessage(BaseModel):
     message: str
     user: str
     created_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StoredAuditEvent(BaseModel):
+    event_id: str
+    timestamp: str
+    actor: str
+    action: str
+    resource_type: str
+    resource_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -486,6 +515,28 @@ class ControlPlaneRepository(Protocol):
         created_at: str,
     ) -> StoredChannelMessage: ...
 
+    async def record_audit_event(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        timestamp: str | None = None,
+    ) -> StoredAuditEvent: ...
+
+    async def list_audit_events(
+        self,
+        actor: str,
+        *,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[StoredAuditEvent]: ...
+
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
     ) -> list[StoredRun]: ...
@@ -507,10 +558,12 @@ class InMemoryControlPlaneRepository:
             str, list[StoredDeploymentOperationEvent]
         ] = {}
         self.channel_messages: list[StoredChannelMessage] = []
+        self.audit_events: list[StoredAuditEvent] = []
         self._event_id = 0
         self._message_id = 0
         self._deployment_operation_event_id = 0
         self._channel_message_id = 0
+        self._audit_event_id = 0
 
     async def init(self) -> None:
         return None
@@ -868,6 +921,50 @@ class InMemoryControlPlaneRepository:
         )
         self.channel_messages.append(stored)
         return stored
+
+    async def record_audit_event(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        timestamp: str | None = None,
+    ) -> StoredAuditEvent:
+        self._audit_event_id += 1
+        event = StoredAuditEvent(
+            event_id=str(self._audit_event_id),
+            timestamp=timestamp or utc_now_iso(),
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            metadata=metadata or {},
+        )
+        self.audit_events.append(event)
+        return event
+
+    async def list_audit_events(
+        self,
+        actor: str,
+        *,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[StoredAuditEvent]:
+        events = [
+            event
+            for event in self.audit_events
+            if event.actor == actor
+            and (action is None or event.action == action)
+            and (resource_type is None or event.resource_type == resource_type)
+            and (resource_id is None or event.resource_id == resource_id)
+        ]
+        events.sort(key=lambda event: event.timestamp, reverse=True)
+        return events[offset : offset + limit]
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -1496,6 +1593,65 @@ class PostgresControlPlaneRepository:
         )
         return _channel_message_from_row(row)
 
+    async def record_audit_event(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        timestamp: str | None = None,
+    ) -> StoredAuditEvent:
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO audit_events (
+                timestamp, actor_subject, action, resource_type, resource_id, metadata
+            )
+            VALUES ($1::timestamptz, $2, $3, $4, $5, $6::jsonb)
+            RETURNING id::text, timestamp, actor_subject, action, resource_type,
+                resource_id, metadata
+            """,
+            _pg_timestamp(timestamp or utc_now_iso()),
+            actor,
+            action,
+            resource_type,
+            resource_id,
+            json.dumps(metadata or {}),
+        )
+        return _audit_event_from_row(row)
+
+    async def list_audit_events(
+        self,
+        actor: str,
+        *,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[StoredAuditEvent]:
+        rows = await self.pool.fetch(
+            """
+            SELECT id::text, timestamp, actor_subject, action, resource_type,
+                resource_id, metadata
+            FROM audit_events
+            WHERE actor_subject = $1
+              AND ($2::text IS NULL OR action = $2)
+              AND ($3::text IS NULL OR resource_type = $3)
+              AND ($4::text IS NULL OR resource_id = $4)
+            ORDER BY timestamp DESC, id DESC
+            LIMIT $5 OFFSET $6
+            """,
+            actor,
+            action,
+            resource_type,
+            resource_id,
+            limit,
+            offset,
+        )
+        return [_audit_event_from_row(row) for row in rows]
+
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
     ) -> list[StoredRun]:
@@ -1659,6 +1815,18 @@ def _channel_message_from_row(row: Any) -> StoredChannelMessage:
         user=str(row["user_subject"]),
         metadata=_json_dict(row["metadata"]) or {},
         created_at=str(_iso(row["created_at"])),
+    )
+
+
+def _audit_event_from_row(row: Any) -> StoredAuditEvent:
+    return StoredAuditEvent(
+        event_id=str(row["id"]),
+        timestamp=str(_iso(row["timestamp"])),
+        actor=str(row["actor_subject"]),
+        action=str(row["action"]),
+        resource_type=str(row["resource_type"]),
+        resource_id=str(row["resource_id"]),
+        metadata=_json_dict(row["metadata"]) or {},
     )
 
 

@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from moiraweave_shared.control_plane import (
     ControlPlaneRepository,
     StoredArtifact,
+    StoredAuditEvent,
     StoredRun,
     StoredRunEvent,
     utc_now_iso,
@@ -49,6 +50,7 @@ from app.models.workloads import (
     AgentSessionRequest,
     AgentSessionResponse,
     ArtifactPreviewResponse,
+    AuditEventResponse,
     ChannelMessageRequest,
     DeploymentOperationEvent,
     DeploymentOperationRequest,
@@ -590,6 +592,29 @@ def _run_response(run: StoredRun) -> RunStatusResponse:
 
 def _event_response(event: StoredRunEvent) -> RunEvent:
     return RunEvent(**event.model_dump())
+
+
+def _audit_event_response(event: StoredAuditEvent) -> AuditEventResponse:
+    return AuditEventResponse(**event.model_dump())
+
+
+async def _audit(
+    control_plane: ControlPlaneRepository,
+    current_user: CurrentUser,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    await control_plane.record_audit_event(
+        current_user.subject,
+        action,
+        resource_type,
+        resource_id,
+        metadata=metadata,
+        timestamp=utc_now_iso(),
+    )
 
 
 def _artifact_response(artifact: StoredArtifact) -> RunArtifact:
@@ -1706,6 +1731,19 @@ async def record_workload_deployment(
         metadata=body.metadata,
         now=utc_now_iso(),
     )
+    await _audit(
+        control_plane,
+        current_user,
+        "deployment.record",
+        "deployment",
+        deployment.deployment_id,
+        metadata={
+            "workload_name": name,
+            "target": target,
+            "status": body.status,
+            "endpoint": body.endpoint,
+        },
+    )
     return _deployment_response(deployment)
 
 
@@ -1754,6 +1792,27 @@ async def list_deployments(
         workload_name=workload_name,
     )
     return [_deployment_response(deployment) for deployment in deployments]
+
+
+@router.get("/audit-events", response_model=list[AuditEventResponse])
+async def list_audit_events(
+    control_plane: ControlPlane,
+    current_user: CurrentUser,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[AuditEventResponse]:
+    events = await control_plane.list_audit_events(
+        current_user.subject,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        limit=limit,
+        offset=offset,
+    )
+    return [_audit_event_response(event) for event in events]
 
 
 @router.post(
@@ -1875,6 +1934,18 @@ async def create_deployment_operation(
             message,
             data=data,
         )
+    await _audit(
+        control_plane,
+        current_user,
+        f"deployment_operation.{body.action}",
+        "deployment_operation",
+        operation.operation_id,
+        metadata={
+            "workload_name": body.workload_name,
+            "target": normalized_target,
+            "status": operation.status,
+        },
+    )
     return _deployment_operation_response(operation)
 
 
@@ -2070,6 +2141,18 @@ async def cancel_run(
             "Cancellation requested",
             data={"previous_status": previous_status},
         )
+        await _audit(
+            control_plane,
+            current_user,
+            "run.cancel",
+            "run",
+            run_id,
+            metadata={
+                "workload_name": run.workload_name,
+                "previous_status": previous_status,
+                "status": run.status,
+            },
+        )
     return _run_response(run)
 
 
@@ -2152,6 +2235,14 @@ async def preview_run_artifact(
         preview_bytes = handle.read(max_bytes + 1)
     truncated = size_bytes > max_bytes or len(preview_bytes) > max_bytes
     preview_bytes = preview_bytes[:max_bytes]
+    await _audit(
+        control_plane,
+        current_user,
+        "artifact.preview",
+        "artifact",
+        artifact.id,
+        metadata={"run_id": run_id, "name": artifact.name, "uri": artifact.uri},
+    )
     return ArtifactPreviewResponse(
         artifact_id=artifact.id,
         run_id=run_id,
@@ -2177,6 +2268,14 @@ async def download_run_artifact(
         current_user,
     )
     path = _artifact_filesystem_path(artifact, get_settings())
+    await _audit(
+        control_plane,
+        current_user,
+        "artifact.download",
+        "artifact",
+        artifact.id,
+        metadata={"run_id": run_id, "name": artifact.name, "uri": artifact.uri},
+    )
     return FileResponse(
         path,
         media_type=_artifact_media_type(artifact, path),
@@ -2299,6 +2398,19 @@ async def post_agent_message(
         context={**body.context, "run_id": run.run_id},
         created_at=created_at,
     )
+    await _audit(
+        control_plane,
+        current_user,
+        "agent.message",
+        "agent_session",
+        session_id,
+        metadata={
+            "agent_name": name,
+            "run_id": run.run_id,
+            "message_id": message.message_id,
+            "channel": "api",
+        },
+    )
     return AgentMessageResponse(
         message_id=message.message_id,
         run_id=run.run_id,
@@ -2383,6 +2495,20 @@ async def post_channel_agent_message(
         run_id=run.run_id,
         metadata=body.metadata,
         created_at=created_at,
+    )
+    await _audit(
+        control_plane,
+        current_user,
+        "channel.message",
+        "agent_session",
+        session_id,
+        metadata={
+            "agent_name": name,
+            "run_id": run.run_id,
+            "message_id": message.message_id,
+            "channel": channel,
+            "external_user_id": body.external_user_id,
+        },
     )
     return AgentMessageResponse(
         message_id=message.message_id,

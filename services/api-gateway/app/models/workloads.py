@@ -231,6 +231,16 @@ class DeploymentOperationEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class AuditEventResponse(BaseModel):
+    event_id: str
+    timestamp: str
+    actor: str
+    action: str
+    resource_type: str
+    resource_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkloadHealthResponse(BaseModel):
     workload_name: str
     status: str
