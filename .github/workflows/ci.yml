@@ -69,19 +69,19 @@ jobs:
         shell: bash
         run: |
           uv run pre-commit run ruff --files \
-            $(find services/api-gateway services/worker -name "*.py" -type f)
+            conftest.py $(find services/api-gateway services/worker -name "*.py" -type f)
 
       - name: Pre-commit Ruff format
         shell: bash
         run: |
           uv run pre-commit run ruff-format --files \
-            $(find services/api-gateway services/worker -name "*.py" -type f)
+            conftest.py $(find services/api-gateway services/worker -name "*.py" -type f)
 
       - name: Ruff lint
-        run: uv run ruff check services/api-gateway services/worker
+        run: uv run ruff check conftest.py services/api-gateway services/worker
 
       - name: Ruff format check
-        run: uv run ruff format --check services/api-gateway services/worker
+        run: uv run ruff format --check conftest.py services/api-gateway services/worker
 
       - name: Mypy typecheck
         shell: bash
