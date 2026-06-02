@@ -773,6 +773,24 @@ def _deployment_plan_response(
     )
 
 
+def _deployment_log_commands(
+    workload: WorkloadDefinition,
+    plan: DeploymentPlanResponse,
+) -> list[str]:
+    service_name = plan.service_name or workload.metadata.name
+    if plan.target == "local":
+        return [f"docker compose logs --tail 200 {service_name}"]
+    if plan.target == "kubernetes":
+        namespace = workload.spec.deployment.namespace or "moiraweave"
+        return [
+            f"kubectl logs -n {namespace} deployment/{service_name} --tail=200",
+            f"kubectl describe deployment -n {namespace} {service_name}",
+        ]
+    return [
+        f"Inspect logs in the external runtime that serves {plan.endpoint or service_name}."
+    ]
+
+
 async def _all_workloads(
     control_plane: ControlPlaneRepository, settings: Settings
 ) -> dict[str, WorkloadDefinition]:
@@ -1747,7 +1765,17 @@ async def create_deployment_operation(
                     {"deployment_id": deployment.deployment_id},
                 )
             )
-        elif body.action in {"apply", "logs", "undeploy"}:
+        elif body.action == "logs":
+            commands = _deployment_log_commands(workload, plan)
+            metadata["log_commands"] = commands
+            events.append(
+                (
+                    "operation.logs",
+                    "Log command guidance generated.",
+                    {"commands": commands},
+                )
+            )
+        elif body.action in {"apply", "undeploy"}:
             operation_status = "failed"
             events.append(
                 (

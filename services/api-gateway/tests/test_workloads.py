@@ -794,6 +794,29 @@ async def test_deployment_operation_apply_is_blocked_without_controller(
     assert resp.json()["status"] == "failed"
 
 
+async def test_deployment_operation_logs_returns_guidance(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/deployment-operations",
+        json={"action": "logs", "workload_name": "hermes", "target": "local"},
+    )
+
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "succeeded"
+    assert resp.json()["metadata"]["log_commands"] == [
+        "docker compose logs --tail 200 hermes"
+    ]
+
+    events = await auth_client.get(
+        f"/v1/deployment-operations/{resp.json()['operation_id']}/events"
+    )
+    assert events.status_code == 200
+    assert events.json()[-1]["type"] == "operation.logs"
+
+
 async def test_external_deployment_plan_records_runtime_without_apply(
     auth_client: AsyncClient,
 ) -> None:
