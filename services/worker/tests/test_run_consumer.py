@@ -107,6 +107,8 @@ async def test_process_agent_message_records_assistant_response(
     assert messages[-1].role == "assistant"
     assert messages[-1].message == "received hello"
     assert artifacts[0].name == "trace.json"
+    assert artifacts[0].metadata["workload_name"] == "agent"
+    assert artifacts[0].metadata["session_id"] == "session-1"
 
 
 async def test_invalid_run_message_goes_to_dead_letter(

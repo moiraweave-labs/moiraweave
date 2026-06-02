@@ -51,7 +51,11 @@ async def _ensure_consumer_group(redis: Redis) -> None:
 
 
 async def _record_artifacts(
-    control_plane: ControlPlaneRepository, run_id: str, result: dict[str, Any]
+    control_plane: ControlPlaneRepository,
+    run_id: str,
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+    result: dict[str, Any],
 ) -> None:
     artifacts = result.get("artifacts")
     if not isinstance(artifacts, list):
@@ -60,7 +64,7 @@ async def _record_artifacts(
         if isinstance(artifact, dict):
             await control_plane.record_artifact(
                 run_id,
-                artifact,
+                _artifact_with_context(artifact, workload, payload),
                 fallback_index=index,
             )
 
@@ -87,6 +91,20 @@ async def _record_agent_response(
         context={"run_id": run_id, "adapter": result.get("adapter", "unknown")},
         created_at=utc_now_iso(),
     )
+
+
+def _artifact_with_context(
+    artifact: dict[str, Any],
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = artifact.get("metadata")
+    enriched_metadata = metadata.copy() if isinstance(metadata, dict) else {}
+    enriched_metadata.setdefault("workload_name", workload.metadata.name)
+    session_id = payload.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        enriched_metadata.setdefault("session_id", session_id)
+    return {**artifact, "metadata": enriched_metadata}
 
 
 async def _dead_letter(
@@ -523,7 +541,7 @@ async def _process_message(
         if await _is_cancel_requested(control_plane, run_id):
             await _cancel(control_plane, run_id, "Run canceled after executor returned")
         else:
-            await _record_artifacts(control_plane, run_id, result)
+            await _record_artifacts(control_plane, run_id, workload, payload, result)
             await _record_agent_response(
                 control_plane, workload, payload, result, run_id
             )
