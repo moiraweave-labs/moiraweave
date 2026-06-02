@@ -99,17 +99,19 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             deployment_id uuid PRIMARY KEY,
             workload_name text NOT NULL,
             target text NOT NULL,
+            environment text NOT NULL DEFAULT 'local',
             status text NOT NULL,
             endpoint text,
             user_subject text NOT NULL,
             metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
             created_at timestamptz NOT NULL DEFAULT now(),
             updated_at timestamptz NOT NULL DEFAULT now(),
-            UNIQUE (workload_name, target, user_subject)
+            CONSTRAINT deployments_workload_target_env_user_key
+                UNIQUE (workload_name, target, environment, user_subject)
         );
 
         CREATE INDEX IF NOT EXISTS deployments_user_workload_idx
-            ON deployments (user_subject, workload_name, updated_at DESC);
+            ON deployments (user_subject, workload_name, environment, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS channel_messages (
             id bigserial PRIMARY KEY,
@@ -138,6 +140,7 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             action text NOT NULL,
             workload_name text NOT NULL,
             target text NOT NULL,
+            environment text NOT NULL DEFAULT 'dev',
             status text NOT NULL,
             user_subject text NOT NULL,
             metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -147,7 +150,7 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
 
         CREATE INDEX IF NOT EXISTS deployment_operations_user_created_idx
-            ON deployment_operations (user_subject, created_at DESC);
+            ON deployment_operations (user_subject, environment, created_at DESC);
 
         CREATE TABLE IF NOT EXISTS deployment_operation_events (
             id bigserial PRIMARY KEY,
@@ -180,6 +183,38 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON audit_events (actor_subject, timestamp DESC);
         CREATE INDEX IF NOT EXISTS audit_events_resource_idx
             ON audit_events (resource_type, resource_id, timestamp DESC);
+        """,
+    ),
+    (
+        5,
+        """
+        ALTER TABLE deployments
+            ADD COLUMN IF NOT EXISTS environment text NOT NULL DEFAULT 'local';
+
+        ALTER TABLE deployment_operations
+            ADD COLUMN IF NOT EXISTS environment text NOT NULL DEFAULT 'dev';
+
+        ALTER TABLE deployments
+            DROP CONSTRAINT IF EXISTS deployments_workload_name_target_user_subject_key;
+
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'deployments_workload_target_env_user_key'
+            ) THEN
+                ALTER TABLE deployments
+                    ADD CONSTRAINT deployments_workload_target_env_user_key
+                    UNIQUE (workload_name, target, environment, user_subject);
+            END IF;
+        END $$;
+
+        CREATE INDEX IF NOT EXISTS deployments_user_workload_env_idx
+            ON deployments (user_subject, workload_name, environment, updated_at DESC);
+
+        CREATE INDEX IF NOT EXISTS deployment_operations_user_env_created_idx
+            ON deployment_operations (user_subject, environment, created_at DESC);
         """,
     ),
 )
@@ -282,6 +317,7 @@ class StoredDeployment(BaseModel):
     deployment_id: str
     workload_name: str
     target: str
+    env: str = "local"
     status: str
     user: str
     created_at: str
@@ -295,6 +331,7 @@ class StoredDeploymentOperation(BaseModel):
     action: str
     workload_name: str
     target: str
+    env: str = "dev"
     status: str
     user: str
     created_at: str
@@ -445,13 +482,18 @@ class ControlPlaneRepository(Protocol):
         status: str,
         user: str,
         *,
+        env: str = "local",
         endpoint: str | None = None,
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
     ) -> StoredDeployment: ...
 
     async def list_deployments(
-        self, user: str, *, workload_name: str | None = None
+        self,
+        user: str,
+        *,
+        workload_name: str | None = None,
+        env: str | None = None,
     ) -> list[StoredDeployment]: ...
 
     async def get_deployment(self, deployment_id: str) -> StoredDeployment | None: ...
@@ -465,6 +507,7 @@ class ControlPlaneRepository(Protocol):
         status: str,
         user: str,
         *,
+        env: str = "dev",
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
@@ -480,6 +523,7 @@ class ControlPlaneRepository(Protocol):
         *,
         workload_name: str | None = None,
         target: str | None = None,
+        env: str | None = None,
         status: str | None = None,
         action: str | None = None,
         limit: int = 50,
@@ -765,6 +809,7 @@ class InMemoryControlPlaneRepository:
         status: str,
         user: str,
         *,
+        env: str = "local",
         endpoint: str | None = None,
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
@@ -776,6 +821,7 @@ class InMemoryControlPlaneRepository:
                 for item in self.deployments.values()
                 if item.workload_name == workload_name
                 and item.target == target
+                and item.env == env
                 and item.user == user
             ),
             None,
@@ -784,6 +830,7 @@ class InMemoryControlPlaneRepository:
             deployment_id=existing.deployment_id if existing else deployment_id,
             workload_name=workload_name,
             target=target,
+            env=env,
             status=status,
             user=user,
             endpoint=endpoint,
@@ -795,13 +842,18 @@ class InMemoryControlPlaneRepository:
         return deployment
 
     async def list_deployments(
-        self, user: str, *, workload_name: str | None = None
+        self,
+        user: str,
+        *,
+        workload_name: str | None = None,
+        env: str | None = None,
     ) -> list[StoredDeployment]:
         deployments = [
             deployment
             for deployment in self.deployments.values()
             if deployment.user == user
             and (workload_name is None or deployment.workload_name == workload_name)
+            and (env is None or deployment.env == env)
         ]
         return sorted(deployments, key=lambda item: item.updated_at or "", reverse=True)
 
@@ -817,6 +869,7 @@ class InMemoryControlPlaneRepository:
         status: str,
         user: str,
         *,
+        env: str = "dev",
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
@@ -827,6 +880,7 @@ class InMemoryControlPlaneRepository:
             action=action,
             workload_name=workload_name,
             target=target,
+            env=env,
             status=status,
             user=user,
             metadata=metadata or {},
@@ -848,6 +902,7 @@ class InMemoryControlPlaneRepository:
         *,
         workload_name: str | None = None,
         target: str | None = None,
+        env: str | None = None,
         status: str | None = None,
         action: str | None = None,
         limit: int = 50,
@@ -859,6 +914,7 @@ class InMemoryControlPlaneRepository:
             if operation.user == user
             and (workload_name is None or operation.workload_name == workload_name)
             and (target is None or operation.target == target)
+            and (env is None or operation.env == env)
             and (status is None or operation.status == status)
             and (action is None or operation.action == action)
         ]
@@ -1363,6 +1419,7 @@ class PostgresControlPlaneRepository:
         status: str,
         user: str,
         *,
+        env: str = "local",
         endpoint: str | None = None,
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
@@ -1371,24 +1428,26 @@ class PostgresControlPlaneRepository:
         row = await self.pool.fetchrow(
             """
             INSERT INTO deployments (
-                deployment_id, workload_name, target, status, endpoint,
+                deployment_id, workload_name, target, environment, status, endpoint,
                 user_subject, metadata, created_at, updated_at
             )
             VALUES (
-                $1::uuid, $2, $3, $4, $5, $6, $7::jsonb,
-                $8::timestamptz, $8::timestamptz
+                $1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb,
+                $9::timestamptz, $9::timestamptz
             )
-            ON CONFLICT (workload_name, target, user_subject) DO UPDATE SET
+            ON CONFLICT (workload_name, target, environment, user_subject) DO UPDATE SET
                 status = EXCLUDED.status,
                 endpoint = EXCLUDED.endpoint,
                 metadata = EXCLUDED.metadata,
                 updated_at = EXCLUDED.updated_at
-            RETURNING deployment_id::text, workload_name, target, status, endpoint,
+            RETURNING deployment_id::text, workload_name, target, environment,
+                status, endpoint,
                 user_subject, metadata, created_at, updated_at
             """,
             deployment_id,
             workload_name,
             target,
+            env,
             status,
             endpoint,
             user,
@@ -1398,26 +1457,34 @@ class PostgresControlPlaneRepository:
         return _deployment_from_row(row)
 
     async def list_deployments(
-        self, user: str, *, workload_name: str | None = None
+        self,
+        user: str,
+        *,
+        workload_name: str | None = None,
+        env: str | None = None,
     ) -> list[StoredDeployment]:
         rows = await self.pool.fetch(
             """
-            SELECT deployment_id::text, workload_name, target, status, endpoint,
+            SELECT deployment_id::text, workload_name, target, environment,
+                status, endpoint,
                 user_subject, metadata, created_at, updated_at
             FROM deployments
             WHERE user_subject = $1
                 AND ($2::text IS NULL OR workload_name = $2)
+                AND ($3::text IS NULL OR environment = $3)
             ORDER BY updated_at DESC
             """,
             user,
             workload_name,
+            env,
         )
         return [_deployment_from_row(row) for row in rows]
 
     async def get_deployment(self, deployment_id: str) -> StoredDeployment | None:
         row = await self.pool.fetchrow(
             """
-            SELECT deployment_id::text, workload_name, target, status, endpoint,
+            SELECT deployment_id::text, workload_name, target, environment,
+                status, endpoint,
                 user_subject, metadata, created_at, updated_at
             FROM deployments
             WHERE deployment_id = $1::uuid
@@ -1435,6 +1502,7 @@ class PostgresControlPlaneRepository:
         status: str,
         user: str,
         *,
+        env: str = "dev",
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
@@ -1443,20 +1511,22 @@ class PostgresControlPlaneRepository:
         row = await self.pool.fetchrow(
             """
             INSERT INTO deployment_operations (
-                operation_id, action, workload_name, target, status, user_subject,
-                metadata, created_at, updated_at, completed_at
+                operation_id, action, workload_name, target, environment, status,
+                user_subject, metadata, created_at, updated_at, completed_at
             )
             VALUES (
-                $1::uuid, $2, $3, $4, $5, $6, $7::jsonb,
-                $8::timestamptz, $8::timestamptz, $9::timestamptz
+                $1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb,
+                $9::timestamptz, $9::timestamptz, $10::timestamptz
             )
-            RETURNING operation_id::text, action, workload_name, target, status,
-                user_subject, metadata, created_at, updated_at, completed_at
+            RETURNING operation_id::text, action, workload_name, target,
+                environment, status, user_subject, metadata, created_at, updated_at,
+                completed_at
             """,
             operation_id,
             action,
             workload_name,
             target,
+            env,
             status,
             user,
             json.dumps(metadata or {}),
@@ -1470,8 +1540,8 @@ class PostgresControlPlaneRepository:
     ) -> StoredDeploymentOperation | None:
         row = await self.pool.fetchrow(
             """
-            SELECT operation_id::text, action, workload_name, target, status,
-                user_subject, metadata, created_at, updated_at, completed_at
+            SELECT operation_id::text, action, workload_name, target, environment,
+                status, user_subject, metadata, created_at, updated_at, completed_at
             FROM deployment_operations
             WHERE operation_id = $1::uuid
             """,
@@ -1485,6 +1555,7 @@ class PostgresControlPlaneRepository:
         *,
         workload_name: str | None = None,
         target: str | None = None,
+        env: str | None = None,
         status: str | None = None,
         action: str | None = None,
         limit: int = 50,
@@ -1492,20 +1563,23 @@ class PostgresControlPlaneRepository:
     ) -> list[StoredDeploymentOperation]:
         rows = await self.pool.fetch(
             """
-            SELECT operation_id::text, action, workload_name, target, status,
-                user_subject, metadata, created_at, updated_at, completed_at
+            SELECT operation_id::text, action, workload_name, target, environment,
+                status, user_subject, metadata, created_at, updated_at,
+                completed_at
             FROM deployment_operations
             WHERE user_subject = $1
               AND ($2::text IS NULL OR workload_name = $2)
               AND ($3::text IS NULL OR target = $3)
-              AND ($4::text IS NULL OR status = $4)
-              AND ($5::text IS NULL OR action = $5)
+              AND ($4::text IS NULL OR environment = $4)
+              AND ($5::text IS NULL OR status = $5)
+              AND ($6::text IS NULL OR action = $6)
             ORDER BY created_at DESC
-            LIMIT $6 OFFSET $7
+            LIMIT $7 OFFSET $8
             """,
             user,
             workload_name,
             target,
+            env,
             status,
             action,
             limit,
@@ -1765,6 +1839,7 @@ def _deployment_from_row(row: Any) -> StoredDeployment:
         deployment_id=str(row["deployment_id"]),
         workload_name=str(row["workload_name"]),
         target=str(row["target"]),
+        env=str(row["environment"]),
         status=str(row["status"]),
         user=str(row["user_subject"]),
         endpoint=row["endpoint"],
@@ -1780,6 +1855,7 @@ def _deployment_operation_from_row(row: Any) -> StoredDeploymentOperation:
         action=str(row["action"]),
         workload_name=str(row["workload_name"]),
         target=str(row["target"]),
+        env=str(row["environment"]),
         status=str(row["status"]),
         user=str(row["user_subject"]),
         metadata=_json_dict(row["metadata"]) or {},

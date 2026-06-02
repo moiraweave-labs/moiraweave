@@ -173,6 +173,7 @@ class AgentMessageHistoryItem(BaseModel):
 
 class DeploymentRequest(BaseModel):
     target: str = Field(pattern="^(local|kubernetes|k8s|external)$")
+    env: str = Field(default="local", min_length=1, max_length=64)
     status: str = "planned"
     endpoint: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -182,6 +183,7 @@ class DeploymentResponse(BaseModel):
     deployment_id: str
     workload_name: str
     target: str
+    env: str = "local"
     status: str
     user: str
     created_at: str
@@ -214,6 +216,7 @@ class DeploymentOperationResponse(BaseModel):
     action: str
     workload_name: str
     target: str
+    env: str = "dev"
     status: str
     user: str
     created_at: str

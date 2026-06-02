@@ -1217,17 +1217,24 @@ def _deployment_record_check(
     deployments: list[DeploymentResponse],
 ) -> PreflightCheck:
     target_records = [
-        deployment for deployment in deployments if deployment.target == target
+        deployment
+        for deployment in deployments
+        if deployment.target == target and deployment.env == env
     ]
     if not target_records:
-        known_targets = sorted({deployment.target for deployment in deployments})
+        known_targets = sorted(
+            {f"{deployment.target}:{deployment.env}" for deployment in deployments}
+        )
         return PreflightCheck(
             name="deployment_record",
             status="warning",
-            message=f"No {target} deployment record is registered for this workload.",
+            message=(
+                f"No {target} deployment record is registered for environment {env!r}."
+            ),
             remediation=_deployment_target_recommendation(workload, target, env),
             metadata={
                 "target": target,
+                "env": env,
                 "known_targets": known_targets,
                 "deployment_count": len(deployments),
             },
@@ -1252,13 +1259,14 @@ def _deployment_record_check(
         name="deployment_record",
         status=status_value,
         message=(
-            f"Latest {target} deployment record is {latest.status!r}."
+            f"Latest {target}/{env} deployment record is {latest.status!r}."
             if status_value != "passed"
-            else f"Latest {target} deployment record is active."
+            else f"Latest {target}/{env} deployment record is active."
         ),
         remediation=remediation,
         metadata={
             "target": target,
+            "env": env,
             "deployment_id": latest.deployment_id,
             "status": latest.status,
             "endpoint": latest.endpoint,
@@ -1271,12 +1279,13 @@ async def _runtime_reachability_check(
     workload: WorkloadDefinition,
     *,
     target: str,
+    env: str,
     deployments: list[DeploymentResponse],
 ) -> PreflightCheck | None:
     candidates = [
         deployment
         for deployment in deployments
-        if deployment.target == target and deployment.endpoint
+        if deployment.target == target and deployment.env == env and deployment.endpoint
     ]
     if not candidates and workload.spec.deployment.mode == "external":
         endpoint = workload.spec.endpoint
@@ -1286,6 +1295,7 @@ async def _runtime_reachability_check(
                     deployment_id=str(uuid4()),
                     workload_name=workload.metadata.name,
                     target=target,
+                    env=env,
                     status="preflight",
                     user="preflight",
                     created_at=utc_now_iso(),
@@ -1455,6 +1465,7 @@ async def _run_preflight(
             for deployment in await control_plane.list_deployments(
                 user,
                 workload_name=workload.metadata.name,
+                env=env,
             )
         ]
         checks.append(
@@ -1593,6 +1604,7 @@ async def _run_preflight(
     runtime_check = await _runtime_reachability_check(
         workload,
         target=normalized_target,
+        env=env,
         deployments=deployments,
     )
     if runtime_check:
@@ -1727,6 +1739,7 @@ async def record_workload_deployment(
         target,
         body.status,
         current_user.subject,
+        env=body.env,
         endpoint=body.endpoint,
         metadata=body.metadata,
         now=utc_now_iso(),
@@ -1740,6 +1753,7 @@ async def record_workload_deployment(
         metadata={
             "workload_name": name,
             "target": target,
+            "env": body.env,
             "status": body.status,
             "endpoint": body.endpoint,
         },
@@ -1786,10 +1800,12 @@ async def list_deployments(
     control_plane: ControlPlane,
     current_user: CurrentUser,
     workload_name: str | None = None,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> list[DeploymentResponse]:
     deployments = await control_plane.list_deployments(
         current_user.subject,
         workload_name=workload_name,
+        env=env,
     )
     return [_deployment_response(deployment) for deployment in deployments]
 
@@ -1856,6 +1872,7 @@ async def create_deployment_operation(
                 plan.target,
                 str(body.metadata.get("status") or "running"),
                 current_user.subject,
+                env=body.env,
                 endpoint=plan.endpoint,
                 metadata={
                     "source": "deployment-operation",
@@ -1923,6 +1940,7 @@ async def create_deployment_operation(
         normalized_target,
         operation_status,
         current_user.subject,
+        env=body.env,
         metadata=metadata,
         now=now,
         completed_at=utc_now_iso(),
@@ -1943,6 +1961,7 @@ async def create_deployment_operation(
         metadata={
             "workload_name": body.workload_name,
             "target": normalized_target,
+            "env": body.env,
             "status": operation.status,
         },
     )
@@ -1955,6 +1974,7 @@ async def list_deployment_operations(
     current_user: CurrentUser,
     workload_name: str | None = None,
     target: str | None = None,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
     status: str | None = None,
     action: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
@@ -1965,6 +1985,7 @@ async def list_deployment_operations(
         current_user.subject,
         workload_name=workload_name,
         target=normalized_target,
+        env=env,
         status=status,
         action=action,
         limit=limit,
@@ -2019,12 +2040,14 @@ async def list_workload_deployments(
     name: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> list[DeploymentResponse]:
     settings = get_settings()
     await _get_workload(name, control_plane, settings)
     deployments = await control_plane.list_deployments(
         current_user.subject,
         workload_name=name,
+        env=env,
     )
     return [_deployment_response(deployment) for deployment in deployments]
 
@@ -2034,6 +2057,7 @@ async def workload_health(
     name: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> WorkloadHealthResponse:
     settings = get_settings()
     await _get_workload(name, control_plane, settings)
@@ -2042,6 +2066,7 @@ async def workload_health(
         for deployment in await control_plane.list_deployments(
             current_user.subject,
             workload_name=name,
+            env=env,
         )
     ]
     health_status, reason = await _deployment_health_status(deployments)

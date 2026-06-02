@@ -532,16 +532,48 @@ async def test_deployment_record_and_workload_health(auth_client: AsyncClient) -
     )
     assert deploy.status_code == 201
     assert deploy.json()["workload_name"] == "hermes"
+    assert deploy.json()["env"] == "local"
 
     deployments = await auth_client.get("/v1/deployments?workload_name=hermes")
     assert deployments.status_code == 200
     assert deployments.json()[0]["target"] == "local"
+    assert deployments.json()[0]["env"] == "local"
 
     health = await auth_client.get("/v1/workloads/hermes/health")
     assert health.status_code == 200
     body = health.json()
     assert body["status"] == "healthy"
     assert body["deployments"][0]["metadata"]["compose_project"] == "moiraweave"
+
+
+async def test_deployment_records_are_environment_scoped(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    dev = await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={"target": "local", "env": "dev", "status": "generated"},
+    )
+    prod = await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={"target": "local", "env": "prod", "status": "running"},
+    )
+    assert dev.status_code == 201
+    assert prod.status_code == 201
+    assert dev.json()["deployment_id"] != prod.json()["deployment_id"]
+
+    prod_deployments = await auth_client.get(
+        "/v1/deployments?workload_name=hermes&env=prod"
+    )
+    assert prod_deployments.status_code == 200
+    assert [item["env"] for item in prod_deployments.json()] == ["prod"]
+    assert prod_deployments.json()[0]["status"] == "running"
+
+    dev_health = await auth_client.get("/v1/workloads/hermes/health?env=dev")
+    prod_health = await auth_client.get("/v1/workloads/hermes/health?env=prod")
+    assert dev_health.json()["status"] == "pending"
+    assert prod_health.json()["status"] == "healthy"
 
 
 async def test_local_deployment_plan_describes_cli_and_compose_apply(
@@ -610,7 +642,7 @@ async def test_preflight_reports_secret_warnings(
 
     resp = await auth_client.post(
         "/v1/workloads/hermes/preflight",
-        json={"target": "local", "env": "dev"},
+        json={"target": "local", "env": "local"},
     )
 
     assert resp.status_code == 200
@@ -627,7 +659,7 @@ async def test_preflight_reports_missing_deployment_record(
 
     resp = await auth_client.post(
         "/v1/workloads/hermes/preflight",
-        json={"target": "local", "env": "dev"},
+        json={"target": "local", "env": "local"},
     )
 
     assert resp.status_code == 200
@@ -662,7 +694,7 @@ async def test_preflight_probes_registered_runtime_endpoint(
 
     resp = await auth_client.post(
         "/v1/workloads/hermes/preflight",
-        json={"target": "local", "env": "dev"},
+        json={"target": "local", "env": "local"},
     )
 
     assert resp.status_code == 200
@@ -780,14 +812,16 @@ async def test_deployment_operation_plan_and_sync(
         },
     )
     assert sync.status_code == 202
+    assert sync.json()["env"] == "dev"
     deployments = await auth_client.get("/v1/deployments?workload_name=hermes")
     assert deployments.json()[0]["status"] == "running"
+    assert deployments.json()[0]["env"] == "dev"
 
     operations = await auth_client.get("/v1/deployment-operations?workload_name=hermes")
     assert operations.status_code == 200
     assert [item["action"] for item in operations.json()] == ["sync", "plan"]
 
-    filtered = await auth_client.get("/v1/deployment-operations?action=sync")
+    filtered = await auth_client.get("/v1/deployment-operations?action=sync&env=dev")
     assert filtered.status_code == 200
     assert [item["operation_id"] for item in filtered.json()] == [
         sync.json()["operation_id"]
