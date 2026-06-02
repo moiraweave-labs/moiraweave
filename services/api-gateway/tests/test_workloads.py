@@ -792,9 +792,7 @@ async def test_deployment_operation_plan_and_sync(
     assert [item["operation_id"] for item in filtered.json()] == [
         sync.json()["operation_id"]
     ]
-    audit = await auth_client.get(
-        "/v1/audit-events?action=deployment_operation.sync"
-    )
+    audit = await auth_client.get("/v1/audit-events?action=deployment_operation.sync")
     assert audit.status_code == 200
     assert audit.json()[0]["resource_id"] == sync.json()["operation_id"]
     assert audit.json()[0]["metadata"]["workload_name"] == "hermes"
