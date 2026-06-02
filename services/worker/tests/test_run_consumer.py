@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,11 +13,16 @@ from moiraweave_shared.control_plane import (
     utc_now_iso,
 )
 from moiraweave_shared.schemas import RunMessage
-from moiraweave_shared.streams import DEAD_LETTER_STREAM
+from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
 from moiraweave_shared.workloads import WorkloadDefinition
 
 from app.agent_adapters import HttpAgentAdapter
-from app.run_consumer import _ensure_consumer_group, _process_message, mark_stale_runs
+from app.run_consumer import (
+    _ensure_consumer_group,
+    _process_message,
+    mark_stale_runs,
+    reclaim_pending_runs,
+)
 
 
 def _agent_workload() -> WorkloadDefinition:
@@ -332,3 +338,163 @@ async def test_mark_stale_runs_skips_refreshed_heartbeat() -> None:
     assert run is not None
     assert run.status == "running"
     assert events == []
+
+
+async def test_reclaim_pending_runs_processes_queued_run(
+    fake_redis: Any,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def fake_send_message(
+        self: HttpAgentAdapter, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        del payload
+        return {"response": "reclaimed", "adapter": self.name}
+
+    monkeypatch.setattr(HttpAgentAdapter, "send_message", fake_send_message)
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    workload = _agent_workload()
+    await control_plane.upsert_workload(workload, "user")
+    await control_plane.create_run(
+        "run-pending",
+        "agent",
+        {},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    stream_message = RunMessage(
+        run_id="run-pending",
+        workload_name="agent",
+        payload="{}",
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+    await fake_redis.xadd(RUN_STREAM, stream_message)
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "old-worker",
+        {RUN_STREAM: ">"},
+        count=1,
+    )
+    await asyncio.sleep(0.01)
+
+    reclaimed = await reclaim_pending_runs(
+        fake_redis,
+        control_plane,
+        "new-worker",
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        min_idle_seconds=0.001,
+        count=10,
+    )
+
+    run = await control_plane.get_run("run-pending")
+    pending = await fake_redis.xpending(RUN_STREAM, CONSUMER_GROUP)
+
+    assert reclaimed == 1
+    assert run is not None
+    assert run.status == "succeeded"
+    assert pending["pending"] == 0
+
+
+async def test_reclaim_pending_runs_skips_active_heartbeating_run(
+    fake_redis: Any,
+    tmp_path,
+) -> None:
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    await control_plane.create_run(
+        "run-active",
+        "agent",
+        {},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    now = utc_now_iso()
+    await control_plane.update_run(
+        "run-active",
+        status="running",
+        heartbeat_at=now,
+        updated_at=now,
+    )
+    stream_message = RunMessage(
+        run_id="run-active",
+        workload_name="agent",
+        payload="{}",
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+    await fake_redis.xadd(RUN_STREAM, stream_message)
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "old-worker",
+        {RUN_STREAM: ">"},
+        count=1,
+    )
+    await asyncio.sleep(0.01)
+
+    reclaimed = await reclaim_pending_runs(
+        fake_redis,
+        control_plane,
+        "new-worker",
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        min_idle_seconds=0.001,
+        count=10,
+    )
+
+    pending = await fake_redis.xpending(RUN_STREAM, CONSUMER_GROUP)
+
+    assert reclaimed == 0
+    assert pending["pending"] == 1
+    assert pending["consumers"][0]["name"] == "old-worker"
+
+
+async def test_reclaim_pending_runs_acks_terminal_run(
+    fake_redis: Any,
+    tmp_path,
+) -> None:
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    completed_at = utc_now_iso()
+    await control_plane.create_run(
+        "run-terminal-pending",
+        "agent",
+        {},
+        "user",
+        created_at=completed_at,
+    )
+    await control_plane.update_run(
+        "run-terminal-pending",
+        status="succeeded",
+        updated_at=completed_at,
+        completed_at=completed_at,
+    )
+    stream_message = RunMessage(
+        run_id="run-terminal-pending",
+        workload_name="agent",
+        payload="{}",
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+    await fake_redis.xadd(RUN_STREAM, stream_message)
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "old-worker",
+        {RUN_STREAM: ">"},
+        count=1,
+    )
+    await asyncio.sleep(0.01)
+
+    reclaimed = await reclaim_pending_runs(
+        fake_redis,
+        control_plane,
+        "new-worker",
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        min_idle_seconds=0.001,
+        count=10,
+    )
+
+    pending = await fake_redis.xpending(RUN_STREAM, CONSUMER_GROUP)
+
+    assert reclaimed == 1
+    assert pending["pending"] == 0
