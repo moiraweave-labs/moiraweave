@@ -53,6 +53,8 @@ class RunEvent(BaseModel):
 class RunArtifact(BaseModel):
     id: str
     run_id: str
+    workload_name: str | None = None
+    session_id: str | None = None
     name: str
     uri: str
     content_type: str | None = None

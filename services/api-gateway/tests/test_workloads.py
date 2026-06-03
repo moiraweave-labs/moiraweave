@@ -316,6 +316,8 @@ async def test_events_and_artifacts_are_returned(
     assert artifacts.status_code == 200
     assert events.json()[0]["type"] == "run.running"
     assert artifacts.json()[0]["name"] == "output.json"
+    assert artifacts.json()[0]["workload_name"] == "hermes"
+    assert artifacts.json()[0]["session_id"] is None
 
 
 async def test_artifact_library_filters_by_workload_session_and_type(
@@ -350,6 +352,10 @@ async def test_artifact_library_filters_by_workload_session_and_type(
 
     assert resp.status_code == 200
     assert resp.json()[0]["name"] == "trace.json"
+    assert resp.json()[0]["workload_name"] == "hermes"
+    assert (
+        resp.json()[0]["session_id"] == "00000000-0000-0000-0000-000000000001"
+    )
 
 
 async def test_artifact_preview_and_download_from_local_storage(

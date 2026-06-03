@@ -674,8 +674,16 @@ async def _audit(
     )
 
 
-def _artifact_response(artifact: StoredArtifact) -> RunArtifact:
-    return RunArtifact(**artifact.model_dump())
+def _artifact_response(
+    artifact: StoredArtifact,
+    *,
+    run: StoredRun | None = None,
+) -> RunArtifact:
+    return RunArtifact(
+        **artifact.model_dump(),
+        workload_name=run.workload_name if run else None,
+        session_id=run.session_id if run else None,
+    )
 
 
 def _artifact_media_type(artifact: StoredArtifact, path: Path) -> str:
@@ -1779,7 +1787,7 @@ async def _artifacts_for_runs(
                 continue
             if created_to and artifact.created_at > created_to:
                 continue
-            artifacts.append(_artifact_response(artifact))
+            artifacts.append(_artifact_response(artifact, run=run))
     return sorted(artifacts, key=lambda item: item.created_at, reverse=True)
 
 
@@ -2368,9 +2376,9 @@ async def list_run_artifacts(
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> list[RunArtifact]:
-    await _authorize_run(run_id, control_plane, current_user)
+    run = await _authorize_run(run_id, control_plane, current_user)
     artifacts = await control_plane.list_artifacts(run_id)
-    return [_artifact_response(artifact) for artifact in artifacts]
+    return [_artifact_response(artifact, run=run) for artifact in artifacts]
 
 
 @router.get(
