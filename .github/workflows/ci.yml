@@ -228,7 +228,17 @@ jobs:
           while read -r image settings_url
           do
             echo "Checking anonymous pull metadata for ${image}"
-            if ! docker manifest inspect "${image}" >/dev/null; then
+            image_ok=0
+            for attempt in {1..12}; do
+              if docker manifest inspect "${image}" >/dev/null; then
+                echo "${image} is pullable without authentication."
+                image_ok=1
+                break
+              fi
+              echo "Anonymous pull check failed on attempt ${attempt}/12; retrying after GHCR propagation delay."
+              sleep 10
+            done
+            if [ "${image_ok}" -ne 1 ]; then
               echo "::error title=GHCR image is not public::${image} was pushed, but it is not pullable without authentication. Set package visibility to public in GitHub Packages: ${settings_url}"
               failed=1
             fi
