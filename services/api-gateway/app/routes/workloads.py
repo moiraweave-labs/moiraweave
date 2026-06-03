@@ -315,11 +315,20 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "ports": [{"name": "http", "port": 8000}],
                 "agent": {
                     "adapter": "generic-http",
+                    "toolOwnership": "runtime",
                     "messagePath": "/message",
                     "statusPath": "/health",
                     "artifactsPath": "/artifacts",
                     "exposedChannels": ["ui", "api", "webhook"],
                     "capabilities": ["demo", "chat"],
+                    "runtimeRequirements": {
+                        "filesystem": {"persistentWorkspace": False},
+                        "network": {"egress": "restricted"},
+                        "webSearch": {"enabled": False},
+                        "browser": {"mode": "none"},
+                        "terminal": {"mode": "none"},
+                        "messaging": {"enabled": False},
+                    },
                     "dispatchTimeoutSeconds": 5,
                     "pollIntervalSeconds": 1,
                 },
@@ -357,6 +366,7 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "secrets": ["OPENAI_API_KEY", "HERMES_API_SERVER_KEY"],
                 "agent": {
                     "adapter": "hermes",
+                    "toolOwnership": "runtime",
                     "requiredSecrets": ["OPENAI_API_KEY"],
                     "workspaceMount": "/workspace",
                     "authTokenEnv": "HERMES_API_SERVER_KEY",
@@ -368,6 +378,21 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                         "external_channels",
                     ),
                     "capabilities": ["chat", "tools", "long-running"],
+                    "runtimeRequirements": {
+                        "filesystem": {
+                            "persistentWorkspace": True,
+                            "workspaceMount": "/workspace",
+                        },
+                        "network": {"egress": "enabled"},
+                        "webSearch": {"enabled": True},
+                        "browser": {"mode": "runtime-managed"},
+                        "terminal": {
+                            "mode": "runtime-managed",
+                            "approval": "runtime",
+                        },
+                        "mcp": {"enabled": True},
+                        "messaging": {"enabled": True},
+                    },
                     "pollIntervalSeconds": 2,
                 },
             },
@@ -397,6 +422,7 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "secrets": ["OPENCLAW_GATEWAY_TOKEN"],
                 "agent": {
                     "adapter": "openclaw",
+                    "toolOwnership": "runtime",
                     "agentId": _template_param(params, template_id, "agent_id"),
                     "authTokenEnv": "OPENCLAW_GATEWAY_TOKEN",
                     "workspaceMount": "/workspace",
@@ -407,6 +433,21 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                         "external_channels",
                     ),
                     "capabilities": ["browser", "tools", "long-running"],
+                    "runtimeRequirements": {
+                        "filesystem": {
+                            "persistentWorkspace": True,
+                            "workspaceMount": "/workspace",
+                        },
+                        "network": {"egress": "enabled"},
+                        "webSearch": {"enabled": True},
+                        "browser": {"mode": "runtime-managed"},
+                        "terminal": {
+                            "mode": "runtime-managed",
+                            "approval": "runtime",
+                        },
+                        "mcp": {"enabled": True},
+                        "messaging": {"enabled": True},
+                    },
                     "pollIntervalSeconds": 2,
                 },
             },
@@ -434,6 +475,7 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "ports": [{"name": "http", "port": port}],
                 "agent": {
                     "adapter": "generic-http",
+                    "toolOwnership": "runtime",
                     "messagePath": _template_param(params, template_id, "message_path"),
                     "statusPath": "/health",
                     "cancelPath": "/cancel",
@@ -444,6 +486,13 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                         template_id,
                         "external_channels",
                     ),
+                    "runtimeRequirements": {
+                        "filesystem": {"persistentWorkspace": False},
+                        "network": {"egress": "restricted"},
+                        "webSearch": {"enabled": False},
+                        "browser": {"mode": "none"},
+                        "terminal": {"mode": "runtime-managed"},
+                    },
                 },
             },
         }
@@ -463,12 +512,20 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "execution": {"mode": "session", "timeoutSeconds": 86400},
                 "agent": {
                     "adapter": _template_param(params, template_id, "adapter"),
+                    "toolOwnership": "runtime",
                     "exposedChannels": ["ui", "api"],
                     "externalOwnedChannels": _template_channel_list(
                         params,
                         template_id,
                         "external_channels",
                     ),
+                    "runtimeRequirements": {
+                        "filesystem": {"persistentWorkspace": False},
+                        "network": {"egress": "restricted"},
+                        "webSearch": {"enabled": False},
+                        "browser": {"mode": "none"},
+                        "terminal": {"mode": "runtime-managed"},
+                    },
                 },
             },
         }
@@ -1142,7 +1199,32 @@ def _workload_secret_references(workload: WorkloadDefinition) -> list[tuple[str,
     )
     if workload.spec.agent.authTokenEnv:
         references.append((workload.spec.agent.authTokenEnv, "spec.agent.authTokenEnv"))
+    runtime_requirements = workload.spec.agent.runtimeRequirements.model_dump()
+    for path, value in _runtime_requirement_secret_refs(runtime_requirements):
+        references.append((value, f"spec.agent.runtimeRequirements.{path}"))
     return references
+
+
+def _runtime_requirement_secret_refs(
+    value: Any,
+    *,
+    path: str = "",
+) -> list[tuple[str, str]]:
+    if isinstance(value, dict):
+        refs: list[tuple[str, str]] = []
+        for key, item in value.items():
+            next_path = f"{path}.{key}" if path else str(key)
+            if key == "requiredSecrets" and isinstance(item, list):
+                refs.extend((next_path, str(secret)) for secret in item)
+            else:
+                refs.extend(_runtime_requirement_secret_refs(item, path=next_path))
+        return refs
+    if isinstance(value, list):
+        refs = []
+        for index, item in enumerate(value):
+            refs.extend(_runtime_requirement_secret_refs(item, path=f"{path}.{index}"))
+        return refs
+    return []
 
 
 def _secret_inventory_response(
@@ -1414,6 +1496,66 @@ async def _worker_dispatch_check(redis: Any) -> PreflightCheck:
     )
 
 
+def _runtime_boundaries_check(workload: WorkloadDefinition) -> PreflightCheck:
+    agent = workload.spec.agent
+    requirements = agent.runtimeRequirements
+    filesystem = requirements.filesystem
+    network = requirements.network
+    browser = requirements.browser
+    terminal = requirements.terminal
+    warnings: list[str] = []
+
+    workspace_mount = filesystem.workspaceMount or agent.workspaceMount
+    if filesystem.persistentWorkspace and not workspace_mount:
+        warnings.append(
+            "Declare spec.agent.workspaceMount or "
+            "spec.agent.runtimeRequirements.filesystem.workspaceMount."
+        )
+    if filesystem.persistentWorkspace and not workload.spec.persistence.enabled:
+        warnings.append(
+            "Enable spec.persistence so runtime-owned filesystem tools survive restarts."
+        )
+    if requirements.webSearch.enabled and network.egress == "disabled":
+        warnings.append("Enable network egress for runtime-owned web search.")
+    if browser.mode != "none" and network.egress == "disabled":
+        warnings.append("Enable network egress for runtime-owned browser automation.")
+    if terminal.mode in {"ssh", "daytona", "modal"} and network.egress == "disabled":
+        warnings.append(
+            f"Enable network egress for the runtime terminal backend {terminal.mode!r}."
+        )
+    if filesystem.hostMounts:
+        warnings.append(
+            "Host mounts are declared but MoiraWeave does not mount arbitrary host "
+            "paths automatically; use workspace/PVC or an external-owned runtime."
+        )
+
+    metadata = {
+        "toolOwnership": agent.toolOwnership,
+        "networkEgress": network.egress,
+        "persistentWorkspace": filesystem.persistentWorkspace,
+        "workspaceMount": workspace_mount,
+        "webSearch": requirements.webSearch.enabled,
+        "browserMode": browser.mode,
+        "terminalMode": terminal.mode,
+        "terminalApproval": terminal.approval,
+        "mcp": requirements.mcp.enabled,
+        "messaging": requirements.messaging.enabled,
+        "exposedChannels": agent.exposedChannels,
+        "externalOwnedChannels": agent.externalOwnedChannels,
+    }
+    return PreflightCheck(
+        name="runtime_boundaries",
+        status="warning" if warnings else "passed",
+        message=(
+            "Runtime owns agent tools; MoiraWeave only prepares environment boundaries."
+            if not warnings
+            else "Runtime-owned tools need environment boundary adjustments."
+        ),
+        remediation=" ".join(warnings) if warnings else None,
+        metadata=metadata,
+    )
+
+
 async def _run_preflight(
     workload: WorkloadDefinition,
     *,
@@ -1560,6 +1702,7 @@ async def _run_preflight(
                 },
             )
         )
+        checks.append(_runtime_boundaries_check(workload))
 
     try:
         await control_plane.ping()

@@ -135,8 +135,14 @@ async def test_agent_template_accepts_runtime_owned_channels(
 
     assert resp.status_code == 201
     agent = resp.json()["manifest"]["spec"]["agent"]
+    requirements = agent["runtimeRequirements"]
+    assert agent["toolOwnership"] == "runtime"
     assert agent["exposedChannels"] == ["ui", "api"]
     assert agent["externalOwnedChannels"] == ["telegram", "slack"]
+    assert requirements["filesystem"]["persistentWorkspace"] is True
+    assert requirements["webSearch"]["enabled"] is True
+    assert requirements["browser"]["mode"] == "runtime-managed"
+    assert requirements["terminal"]["mode"] == "runtime-managed"
 
 
 async def test_submit_run_queues_dispatch(
@@ -747,6 +753,39 @@ async def test_preflight_passes_with_worker_consumer(
     assert checks["worker_dispatch"]["metadata"]["consumers"] == 1
 
 
+async def test_preflight_reports_runtime_boundaries(
+    auth_client: AsyncClient,
+) -> None:
+    manifest = _agent_manifest()
+    manifest["spec"]["persistence"] = {"enabled": False}
+    manifest["spec"]["agent"] = {
+        "adapter": "hermes",
+        "toolOwnership": "runtime",
+        "runtimeRequirements": {
+            "filesystem": {"persistentWorkspace": True},
+            "network": {"egress": "disabled"},
+            "webSearch": {"enabled": True},
+            "browser": {"mode": "runtime-managed"},
+        },
+    }
+    register = await auth_client.post("/v1/workloads", json=manifest)
+    assert register.status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    checks = {check["name"]: check for check in resp.json()["checks"]}
+    runtime = checks["runtime_boundaries"]
+    assert runtime["status"] == "warning"
+    assert runtime["metadata"]["toolOwnership"] == "runtime"
+    assert runtime["metadata"]["networkEgress"] == "disabled"
+    assert "workspace" in runtime["remediation"].lower()
+    assert "web search" in runtime["remediation"].lower()
+
+
 async def test_secret_inventory_lists_required_names_without_values(
     auth_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -773,6 +812,35 @@ async def test_secret_inventory_lists_required_names_without_values(
     assert items["HERMES_API_SERVER_KEY"]["workloads"] == ["hermes"]
     assert (
         "hermes:spec.agent.authTokenEnv" in items["HERMES_API_SERVER_KEY"]["references"]
+    )
+
+
+async def test_secret_inventory_includes_runtime_requirement_secrets(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {
+        "adapter": "hermes",
+        "runtimeRequirements": {
+            "browser": {
+                "mode": "cloud",
+                "requiredSecrets": ["BROWSER_USE_API_KEY"],
+            }
+        },
+    }
+    register = await auth_client.post("/v1/workloads", json=manifest)
+    assert register.status_code == 201
+
+    resp = await auth_client.get("/v1/secrets?workload_name=hermes")
+
+    assert resp.status_code == 200
+    items = {item["name"]: item for item in resp.json()["secrets"]}
+    assert items["BROWSER_USE_API_KEY"]["present"] is False
+    assert (
+        "hermes:spec.agent.runtimeRequirements.browser.requiredSecrets"
+        in items["BROWSER_USE_API_KEY"]["references"]
     )
 
 

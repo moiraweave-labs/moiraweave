@@ -19,6 +19,18 @@ WorkloadType = Literal["model-service", "pipeline", "agent-service"]
 ExecutionMode = Literal["sync", "async", "session"]
 DeploymentMode = Literal["managed", "external"]
 DeploymentTarget = Literal["local", "kubernetes"]
+ToolOwnership = Literal["runtime"]
+NetworkEgressMode = Literal["disabled", "restricted", "enabled"]
+BrowserRuntimeMode = Literal["none", "runtime-managed", "cloud", "sidecar"]
+TerminalRuntimeMode = Literal[
+    "none",
+    "runtime-managed",
+    "container",
+    "ssh",
+    "daytona",
+    "modal",
+]
+RuntimeApprovalMode = Literal["runtime", "required", "none"]
 RunStatus = Literal[
     "queued",
     "starting",
@@ -172,12 +184,91 @@ class PipelineNode(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class RuntimeCapabilityRequirement(BaseModel):
+    """Generic runtime-owned capability requirement."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    requiredSecrets: list[str] = Field(default_factory=list)
+
+
+class RuntimeFilesystemRequirement(BaseModel):
+    """Filesystem boundary required by the runtime-owned tools."""
+
+    model_config = ConfigDict(extra="allow")
+
+    persistentWorkspace: bool = False
+    workspaceMount: str | None = None
+    hostMounts: list[str] = Field(default_factory=list)
+
+    @field_validator("workspaceMount")
+    @classmethod
+    def _validate_workspace_mount(cls, value: str | None) -> str | None:
+        if value is not None and not value.startswith("/"):
+            raise ValueError(
+                "runtimeRequirements.filesystem.workspaceMount must be absolute"
+            )
+        return value
+
+
+class RuntimeNetworkRequirement(BaseModel):
+    """Network boundary required by the runtime-owned tools."""
+
+    model_config = ConfigDict(extra="allow")
+
+    egress: NetworkEgressMode = "restricted"
+
+
+class RuntimeBrowserRequirement(BaseModel):
+    """Browser automation boundary required by the runtime-owned tools."""
+
+    model_config = ConfigDict(extra="allow")
+
+    mode: BrowserRuntimeMode = "none"
+    requiredSecrets: list[str] = Field(default_factory=list)
+
+
+class RuntimeTerminalRequirement(BaseModel):
+    """Terminal execution boundary required by the runtime-owned tools."""
+
+    model_config = ConfigDict(extra="allow")
+
+    mode: TerminalRuntimeMode = "none"
+    approval: RuntimeApprovalMode = "runtime"
+    requiredSecrets: list[str] = Field(default_factory=list)
+
+
+class AgentRuntimeRequirements(BaseModel):
+    """Environment MoiraWeave must provide while tools stay runtime-owned."""
+
+    model_config = ConfigDict(extra="allow")
+
+    filesystem: RuntimeFilesystemRequirement = Field(
+        default_factory=RuntimeFilesystemRequirement
+    )
+    network: RuntimeNetworkRequirement = Field(default_factory=RuntimeNetworkRequirement)
+    webSearch: RuntimeCapabilityRequirement = Field(
+        default_factory=RuntimeCapabilityRequirement
+    )
+    browser: RuntimeBrowserRequirement = Field(default_factory=RuntimeBrowserRequirement)
+    terminal: RuntimeTerminalRequirement = Field(default_factory=RuntimeTerminalRequirement)
+    mcp: RuntimeCapabilityRequirement = Field(default_factory=RuntimeCapabilityRequirement)
+    messaging: RuntimeCapabilityRequirement = Field(
+        default_factory=RuntimeCapabilityRequirement
+    )
+
+
 class WorkloadAgentSpec(BaseModel):
     """Agent-runtime contract exposed through MoiraWeave."""
 
     model_config = ConfigDict(extra="allow")
 
     adapter: Literal["generic-http", "generic", "hermes", "openclaw"] = "generic-http"
+    toolOwnership: ToolOwnership = "runtime"
+    runtimeRequirements: AgentRuntimeRequirements = Field(
+        default_factory=AgentRuntimeRequirements
+    )
     capabilities: list[str] = Field(default_factory=list)
     configSchema: dict[str, Any] = Field(default_factory=dict)
     workspaceMount: str | None = None
