@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import pytest
@@ -20,6 +21,28 @@ def _live_endpoint(env_name: str) -> str:
     if not endpoint:
         pytest.skip(f"set {env_name} to run this live agent test")
     return endpoint.rstrip("/")
+
+
+def _turn_enabled(env_name: str) -> None:
+    if os.getenv(env_name) != "1":
+        pytest.skip(f"set {env_name}=1 to send a live agent turn")
+
+
+def _turn_timeout() -> float:
+    return float(os.getenv("MOIRAWEAVE_REAL_AGENT_TURN_TIMEOUT_SECONDS", "120"))
+
+
+async def _never_cancel() -> bool:
+    return False
+
+
+async def _collect_event(
+    events: list[tuple[str, str, dict[str, Any] | None]],
+    event_type: str,
+    message: str,
+    data: dict[str, Any] | None,
+) -> None:
+    events.append((event_type, message, data))
 
 
 def _external_agent_workload(
@@ -72,6 +95,50 @@ async def test_real_hermes_runtime_health() -> None:
     assert status
 
 
+async def test_real_hermes_runtime_turn() -> None:
+    _turn_enabled("MOIRAWEAVE_REAL_HERMES_TURN_TEST")
+    endpoint = _live_endpoint("MOIRAWEAVE_REAL_HERMES_URL")
+    agent: dict[str, Any] = {}
+    auth_env = os.getenv("MOIRAWEAVE_REAL_HERMES_AUTH_TOKEN_ENV")
+    if auth_env:
+        agent["authTokenEnv"] = auth_env
+
+    workload = _external_agent_workload(
+        name="hermes-real",
+        endpoint=endpoint,
+        adapter="hermes",
+        port_name="http",
+        port=8642,
+        agent=agent,
+    )
+    adapter = build_agent_adapter(workload, timeout_seconds=10)
+    payload = {
+        "message": os.getenv(
+            "MOIRAWEAVE_REAL_HERMES_MESSAGE",
+            "Reply with the single word moiraweave-ok.",
+        ),
+        "session_id": f"moiraweave-live-{uuid.uuid4()}",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    accepted = await adapter.send_message(payload)
+    assert accepted.get("accepted") is True
+
+    events: list[tuple[str, str, dict[str, Any] | None]] = []
+    result = await adapter.wait_for_completion(
+        payload,
+        accepted,
+        emit=lambda event_type, message, data: _collect_event(
+            events, event_type, message, data
+        ),
+        is_cancel_requested=_never_cancel,
+        timeout_seconds=_turn_timeout(),
+    )
+
+    assert isinstance(result, dict)
+    assert result
+    assert any(event[0] == "agent.external_run_started" for event in events)
+
+
 async def test_real_openclaw_runtime_health() -> None:
     endpoint = _live_endpoint("MOIRAWEAVE_REAL_OPENCLAW_URL")
     agent: dict[str, Any] = {
@@ -95,3 +162,50 @@ async def test_real_openclaw_runtime_health() -> None:
 
     assert isinstance(status, dict)
     assert status
+
+
+async def test_real_openclaw_runtime_turn() -> None:
+    _turn_enabled("MOIRAWEAVE_REAL_OPENCLAW_TURN_TEST")
+    endpoint = _live_endpoint("MOIRAWEAVE_REAL_OPENCLAW_URL")
+    agent: dict[str, Any] = {
+        "agentId": os.getenv("MOIRAWEAVE_REAL_OPENCLAW_AGENT_ID", "main"),
+    }
+    auth_env = os.getenv("MOIRAWEAVE_REAL_OPENCLAW_AUTH_TOKEN_ENV")
+    if auth_env:
+        agent["authTokenEnv"] = auth_env
+
+    workload = _external_agent_workload(
+        name="openclaw-real",
+        endpoint=endpoint,
+        adapter="openclaw",
+        port_name="gateway",
+        port=18789,
+        agent=agent,
+    )
+    adapter = build_agent_adapter(workload, timeout_seconds=10)
+    payload = {
+        "message": os.getenv(
+            "MOIRAWEAVE_REAL_OPENCLAW_MESSAGE",
+            "Reply with the single word moiraweave-ok.",
+        ),
+        "session_id": f"moiraweave-live-{uuid.uuid4()}",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    accepted = await adapter.send_message(payload)
+    assert accepted.get("accepted") is True
+
+    events: list[tuple[str, str, dict[str, Any] | None]] = []
+    result = await adapter.wait_for_completion(
+        payload,
+        accepted,
+        emit=lambda event_type, message, data: _collect_event(
+            events, event_type, message, data
+        ),
+        is_cancel_requested=_never_cancel,
+        timeout_seconds=_turn_timeout(),
+    )
+
+    assert isinstance(result, dict)
+    assert result
+    if accepted.get("external_run_id"):
+        assert any(event[0] == "agent.external_run_started" for event in events)

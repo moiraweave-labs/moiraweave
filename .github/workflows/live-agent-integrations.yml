@@ -16,6 +16,31 @@ on:
         required: false
         default: "main"
         type: string
+      hermes_turn_test:
+        description: "Send a real Hermes agent turn"
+        required: false
+        default: false
+        type: boolean
+      hermes_message:
+        description: "Hermes test message"
+        required: false
+        default: "Reply with the single word moiraweave-ok."
+        type: string
+      openclaw_turn_test:
+        description: "Send a real OpenClaw agent turn"
+        required: false
+        default: false
+        type: boolean
+      openclaw_message:
+        description: "OpenClaw test message"
+        required: false
+        default: "Reply with the single word moiraweave-ok."
+        type: string
+      turn_timeout_seconds:
+        description: "Live turn timeout"
+        required: false
+        default: "120"
+        type: string
 
 permissions:
   contents: read
@@ -49,9 +74,14 @@ jobs:
           MOIRAWEAVE_REAL_AGENT_TESTS: "1"
           MOIRAWEAVE_REAL_HERMES_URL: ${{ inputs.hermes_url }}
           MOIRAWEAVE_REAL_HERMES_AUTH_TOKEN_ENV: HERMES_API_SERVER_KEY
+          MOIRAWEAVE_REAL_HERMES_TURN_TEST: ${{ inputs.hermes_turn_test && '1' || '0' }}
+          MOIRAWEAVE_REAL_HERMES_MESSAGE: ${{ inputs.hermes_message }}
           MOIRAWEAVE_REAL_OPENCLAW_URL: ${{ inputs.openclaw_url }}
           MOIRAWEAVE_REAL_OPENCLAW_AGENT_ID: ${{ inputs.openclaw_agent_id }}
           MOIRAWEAVE_REAL_OPENCLAW_AUTH_TOKEN_ENV: OPENCLAW_GATEWAY_TOKEN
+          MOIRAWEAVE_REAL_OPENCLAW_TURN_TEST: ${{ inputs.openclaw_turn_test && '1' || '0' }}
+          MOIRAWEAVE_REAL_OPENCLAW_MESSAGE: ${{ inputs.openclaw_message }}
+          MOIRAWEAVE_REAL_AGENT_TURN_TIMEOUT_SECONDS: ${{ inputs.turn_timeout_seconds }}
           HERMES_API_SERVER_KEY: ${{ secrets.HERMES_API_SERVER_KEY }}
           OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
         run: >
