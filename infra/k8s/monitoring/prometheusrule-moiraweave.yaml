@@ -41,7 +41,7 @@ spec:
           annotations:
             summary: "API Gateway P95 latency > 2s"
             description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 2s)."
-            runbook_url: "https://github.com/jgallego9/moiraweave-mlops/blob/main/docs/runbooks/latency.md"
+            runbook_url: "https://moiraweave-labs.github.io/moiraweave-docs/architecture/#observability"
 
         - alert: APIGatewayHighErrorRate
           expr: >
@@ -57,7 +57,7 @@ spec:
           annotations:
             summary: "API Gateway 5xx error rate > 5%"
             description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)."
-            runbook_url: "https://github.com/jgallego9/moiraweave-mlops/blob/main/docs/runbooks/errors.md"
+            runbook_url: "https://moiraweave-labs.github.io/moiraweave-docs/architecture/#observability"
 
         - alert: WorkerNoJobsProcessed
           expr: >

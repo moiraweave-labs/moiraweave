@@ -21,7 +21,8 @@ spec:
     - Egress
 
 ---
-# 2. API Gateway — accepts inbound HTTP from ingress-nginx only.
+# 2. API Gateway — accepts user HTTP from ingress-nginx and Prometheus scrapes
+#    from the monitoring namespace.
 #    Allows outbound to Redis, Postgres, Qdrant, workload health endpoints, and DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -42,6 +43,14 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Prometheus metrics scrape
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
           port: 8000
