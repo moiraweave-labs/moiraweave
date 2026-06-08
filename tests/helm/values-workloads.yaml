@@ -27,6 +27,8 @@ workloads:
       mountPath: /data
     agent:
       adapter: hermes
+      requiredSecrets:
+        - OPENAI_API_KEY
       authTokenEnv: HERMES_API_SERVER_KEY
       workspaceMount: /workspace
   openclaw:
@@ -46,10 +48,6 @@ workloads:
     ports:
       - name: gateway
         port: 18789
-    env:
-      OPENCLAW_GATEWAY_TOKEN: "${OPENCLAW_GATEWAY_TOKEN}"
-    secrets:
-      - OPENCLAW_GATEWAY_TOKEN
     persistence:
       enabled: true
       mountPath: /workspace

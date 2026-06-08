@@ -134,15 +134,37 @@ async def test_agent_template_accepts_runtime_owned_channels(
     )
 
     assert resp.status_code == 201
-    agent = resp.json()["manifest"]["spec"]["agent"]
+    manifest = resp.json()["manifest"]
+    assert manifest["spec"]["secrets"] == ["OPENAI_API_KEY"]
+    agent = manifest["spec"]["agent"]
     requirements = agent["runtimeRequirements"]
     assert agent["toolOwnership"] == "runtime"
+    assert agent["authTokenEnv"] == "HERMES_API_SERVER_KEY"
     assert agent["exposedChannels"] == ["ui", "api"]
     assert agent["externalOwnedChannels"] == ["telegram", "slack"]
     assert requirements["filesystem"]["persistentWorkspace"] is True
     assert requirements["webSearch"]["enabled"] is True
     assert requirements["browser"]["mode"] == "runtime-managed"
     assert requirements["terminal"]["mode"] == "runtime-managed"
+
+
+async def test_openclaw_template_uses_auth_token_env_as_secret_source(
+    auth_client: AsyncClient,
+) -> None:
+    resp = await auth_client.post(
+        "/v1/workloads/from-template",
+        json={
+            "template_id": "openclaw",
+            "parameters": {"name": "OpenClaw Ops"},
+        },
+    )
+
+    assert resp.status_code == 201
+    manifest = resp.json()["manifest"]
+    assert manifest["spec"].get("secrets") == []
+    assert manifest["spec"].get("env") == {}
+    assert manifest["spec"]["agent"]["authTokenEnv"] == "OPENCLAW_GATEWAY_TOKEN"
+    assert "OPENCLAW_GATEWAY_TOKEN" not in manifest["spec"]["secrets"]
 
 
 async def test_submit_run_queues_dispatch(

@@ -3,6 +3,29 @@
 {{- $targets := default (list "local" "kubernetes") $deployment.targets }}
 {{- if and ($workload.enabled) (ne (default "managed" $deployment.mode) "external") (has "kubernetes" $targets) ($workload.image) }}
 {{- $ctx := dict "root" $ "name" $name "workload" $workload }}
+{{- $secretNames := list }}
+{{- range $secret := $workload.secrets }}
+{{- $secretNames = append $secretNames $secret }}
+{{- end }}
+{{- if $workload.agent }}
+{{- range $secret := $workload.agent.requiredSecrets }}
+{{- $secretNames = append $secretNames $secret }}
+{{- end }}
+{{- if $workload.agent.authTokenEnv }}
+{{- $secretNames = append $secretNames $workload.agent.authTokenEnv }}
+{{- end }}
+{{- end }}
+{{- $secretNames = uniq $secretNames }}
+{{- $persistenceMountPath := "" }}
+{{- if and $workload.persistence $workload.persistence.enabled $workload.persistence.mountPath }}
+{{- $persistenceMountPath = $workload.persistence.mountPath }}
+{{- end }}
+{{- $agentWorkspaceMount := "" }}
+{{- if and $workload.agent $workload.agent.workspaceMount }}
+{{- $agentWorkspaceMount = $workload.agent.workspaceMount }}
+{{- end }}
+{{- $needsDataVolume := or $persistenceMountPath $agentWorkspaceMount }}
+{{- $needsWorkspaceMount := and $agentWorkspaceMount (ne $agentWorkspaceMount $persistenceMountPath) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -50,24 +73,17 @@ spec:
           {{- end }}
           env:
             {{- range $key, $value := $workload.env }}
+            {{- if not (has $key $secretNames) }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- range $secret := $workload.secrets }}
+            {{- end }}
+            {{- range $secret := $secretNames }}
             - name: {{ $secret }}
               valueFrom:
                 secretKeyRef:
                   name: {{ default $.Values.apiGateway.existingSecret $workload.existingSecret }}
                   key: {{ $secret }}
-            {{- end }}
-            {{- if $workload.agent }}
-            {{- range $secret := $workload.agent.requiredSecrets }}
-            - name: {{ $secret }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ default $.Values.apiGateway.existingSecret $workload.existingSecret }}
-                  key: {{ $secret }}
-            {{- end }}
             {{- end }}
             - name: MOIRAWEAVE_WORKLOAD_NAME
               value: {{ $name | quote }}
@@ -75,15 +91,15 @@ spec:
               value: {{ include "moiraweave.redisUrl" $ | quote }}
             - name: QDRANT_URL
               value: {{ include "moiraweave.qdrantUrl" $ | quote }}
-          {{- if or (and $workload.persistence $workload.persistence.enabled $workload.persistence.mountPath) (and $workload.agent $workload.agent.workspaceMount) }}
+          {{- if $needsDataVolume }}
           volumeMounts:
-            {{- if and $workload.persistence $workload.persistence.enabled $workload.persistence.mountPath }}
+            {{- if $persistenceMountPath }}
             - name: data
-              mountPath: {{ $workload.persistence.mountPath | quote }}
+              mountPath: {{ $persistenceMountPath | quote }}
             {{- end }}
-            {{- if and $workload.agent $workload.agent.workspaceMount }}
+            {{- if $needsWorkspaceMount }}
             - name: data
-              mountPath: {{ $workload.agent.workspaceMount | quote }}
+              mountPath: {{ $agentWorkspaceMount | quote }}
               subPath: workspace
             {{- end }}
           {{- end }}
@@ -106,7 +122,7 @@ spec:
               cpu: "1"
               memory: 1Gi
             {{- end }}
-      {{- if or (and $workload.persistence $workload.persistence.enabled $workload.persistence.mountPath) (and $workload.agent $workload.agent.workspaceMount) }}
+      {{- if $needsDataVolume }}
       volumes:
         - name: data
           persistentVolumeClaim:
