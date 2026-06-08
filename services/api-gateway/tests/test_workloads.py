@@ -568,7 +568,7 @@ async def test_deployment_record_and_workload_health(auth_client: AsyncClient) -
         "/v1/workloads/hermes/deployments",
         json={
             "target": "local",
-            "status": "applied",
+            "status": "deployed",
             "metadata": {"compose_project": "moiraweave"},
         },
     )
@@ -588,6 +588,22 @@ async def test_deployment_record_and_workload_health(auth_client: AsyncClient) -
     assert body["deployments"][0]["metadata"]["compose_project"] == "moiraweave"
 
 
+async def test_unreachable_deployment_status_is_degraded(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    deploy = await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={"target": "local", "status": "unreachable"},
+    )
+    assert deploy.status_code == 201
+
+    health = await auth_client.get("/v1/workloads/hermes/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "degraded"
+
+
 async def test_deployment_records_are_environment_scoped(
     auth_client: AsyncClient,
 ) -> None:
@@ -599,7 +615,7 @@ async def test_deployment_records_are_environment_scoped(
     )
     prod = await auth_client.post(
         "/v1/workloads/hermes/deployments",
-        json={"target": "local", "env": "prod", "status": "running"},
+        json={"target": "local", "env": "prod", "status": "reachable"},
     )
     assert dev.status_code == 201
     assert prod.status_code == 201
@@ -610,7 +626,7 @@ async def test_deployment_records_are_environment_scoped(
     )
     assert prod_deployments.status_code == 200
     assert [item["env"] for item in prod_deployments.json()] == ["prod"]
-    assert prod_deployments.json()[0]["status"] == "running"
+    assert prod_deployments.json()[0]["status"] == "reachable"
 
     dev_health = await auth_client.get("/v1/workloads/hermes/health?env=dev")
     prod_health = await auth_client.get("/v1/workloads/hermes/health?env=prod")
@@ -912,13 +928,12 @@ async def test_deployment_operation_plan_and_sync(
             "action": "sync",
             "workload_name": "hermes",
             "target": "local",
-            "metadata": {"status": "running"},
         },
     )
     assert sync.status_code == 202
     assert sync.json()["env"] == "dev"
     deployments = await auth_client.get("/v1/deployments?workload_name=hermes")
-    assert deployments.json()[0]["status"] == "running"
+    assert deployments.json()[0]["status"] == "deployed"
     assert deployments.json()[0]["env"] == "dev"
 
     operations = await auth_client.get("/v1/deployment-operations?workload_name=hermes")

@@ -1183,9 +1183,9 @@ async def _deployment_health_status(
             return "healthy", next(reason for ok, reason in probes if ok)
         return "degraded", "; ".join(reason for _ok, reason in probes)
     statuses = {deployment.status for deployment in deployments}
-    if statuses & {"failed", "lost", "unhealthy"}:
+    if statuses & {"failed", "lost", "unhealthy", "unreachable"}:
         return "degraded", "At least one deployment is reporting a failed state"
-    if statuses & {"applied", "running", "healthy"}:
+    if statuses & {"applied", "running", "deployed", "reachable", "healthy"}:
         return "healthy", "A deployment record is active"
     return "pending", "Deployment exists but is not active yet"
 
@@ -1364,8 +1364,8 @@ def _deployment_record_check(
         )
 
     latest = target_records[0]
-    bad_statuses = {"failed", "lost", "unhealthy"}
-    active_statuses = {"applied", "running", "healthy"}
+    bad_statuses = {"failed", "lost", "unhealthy", "unreachable"}
+    active_statuses = {"applied", "running", "deployed", "reachable", "healthy"}
     status_value = (
         "failed"
         if latest.status in bad_statuses
@@ -2054,7 +2054,7 @@ async def create_deployment_operation(
                 str(uuid4()),
                 workload.metadata.name,
                 plan.target,
-                str(body.metadata.get("status") or "running"),
+                str(body.metadata.get("status") or "deployed"),
                 current_user.subject,
                 env=body.env,
                 endpoint=plan.endpoint,
