@@ -80,6 +80,31 @@ def test_sample_managed_agents_define_runtime_probes() -> None:
     assert openclaw["livenessProbe"]["tcpSocket"] == {"port": "gateway"}
 
 
+def test_sample_managed_agents_have_unique_services_and_ports() -> None:
+    values = _read_yaml("tests/helm/values-workloads.yaml")
+    managed_agents = [
+        workload
+        for workload in values["workloads"].values()
+        if workload.get("enabled") and workload.get("type") == "agent-service"
+    ]
+
+    service_names = [
+        workload.get("deployment", {}).get("serviceName")
+        for workload in managed_agents
+    ]
+    ports = [
+        port["port"]
+        for workload in managed_agents
+        for port in workload.get("ports", [])
+        if isinstance(port, dict) and port.get("port")
+    ]
+
+    assert service_names == ["hermes", "openclaw"]
+    assert len(service_names) == len(set(service_names))
+    assert ports == [8642, 18789]
+    assert len(ports) == len(set(ports))
+
+
 def test_workload_template_renders_runtime_probes() -> None:
     template = _read_text("infra/helm/moiraweave/templates/workloads/deployment.yaml")
 
