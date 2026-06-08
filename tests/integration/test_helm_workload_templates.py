@@ -60,3 +60,30 @@ def test_sample_workloads_do_not_duplicate_persistence_and_workspace_mounts() ->
             )
             assert "$needsWorkspaceMount" in template
             assert "ne $agentWorkspaceMount $persistenceMountPath" in template
+
+
+def test_sample_managed_agents_define_runtime_probes() -> None:
+    values = _read_yaml("tests/helm/values-workloads.yaml")
+
+    hermes = values["workloads"]["hermes"]
+    assert hermes["readinessProbe"]["httpGet"] == {
+        "path": "/health",
+        "port": "http",
+    }
+    assert hermes["livenessProbe"]["httpGet"] == {
+        "path": "/health",
+        "port": "http",
+    }
+
+    openclaw = values["workloads"]["openclaw"]
+    assert openclaw["readinessProbe"]["tcpSocket"] == {"port": "gateway"}
+    assert openclaw["livenessProbe"]["tcpSocket"] == {"port": "gateway"}
+
+
+def test_workload_template_renders_runtime_probes() -> None:
+    template = _read_text("infra/helm/moiraweave/templates/workloads/deployment.yaml")
+
+    assert "if $workload.livenessProbe" in template
+    assert "toYaml $workload.livenessProbe" in template
+    assert "if $workload.readinessProbe" in template
+    assert "toYaml $workload.readinessProbe" in template

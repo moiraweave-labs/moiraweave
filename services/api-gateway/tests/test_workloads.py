@@ -136,6 +136,14 @@ async def test_agent_template_accepts_runtime_owned_channels(
     assert resp.status_code == 201
     manifest = resp.json()["manifest"]
     assert manifest["spec"]["secrets"] == ["OPENAI_API_KEY"]
+    assert manifest["spec"]["readinessProbe"]["httpGet"] == {
+        "path": "/health",
+        "port": "http",
+    }
+    assert manifest["spec"]["livenessProbe"]["httpGet"] == {
+        "path": "/health",
+        "port": "http",
+    }
     agent = manifest["spec"]["agent"]
     requirements = agent["runtimeRequirements"]
     assert agent["toolOwnership"] == "runtime"
@@ -163,6 +171,8 @@ async def test_openclaw_template_uses_auth_token_env_as_secret_source(
     manifest = resp.json()["manifest"]
     assert manifest["spec"].get("secrets") == []
     assert manifest["spec"].get("env") == {}
+    assert manifest["spec"]["readinessProbe"]["tcpSocket"] == {"port": "gateway"}
+    assert manifest["spec"]["livenessProbe"]["tcpSocket"] == {"port": "gateway"}
     assert manifest["spec"]["agent"]["authTokenEnv"] == "OPENCLAW_GATEWAY_TOKEN"
     assert "OPENCLAW_GATEWAY_TOKEN" not in manifest["spec"]["secrets"]
 

@@ -282,6 +282,26 @@ def _template_channel_list(
     return channels
 
 
+def _http_probe(port: str, path: str = "/health") -> dict[str, Any]:
+    return {
+        "httpGet": {"path": path, "port": port},
+        "initialDelaySeconds": 5,
+        "periodSeconds": 10,
+        "timeoutSeconds": 5,
+        "failureThreshold": 6,
+    }
+
+
+def _tcp_probe(port: str) -> dict[str, Any]:
+    return {
+        "tcpSocket": {"port": port},
+        "initialDelaySeconds": 5,
+        "periodSeconds": 10,
+        "timeoutSeconds": 5,
+        "failureThreshold": 6,
+    }
+
+
 def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, Any]:
     if template_id not in _TEMPLATE_PARAMETERS:
         raise HTTPException(
@@ -358,6 +378,13 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "execution": {"mode": "session", "timeoutSeconds": 172800},
                 "ports": [{"name": "http", "port": port}],
                 "persistence": {"enabled": True, "mountPath": "/workspace"},
+                "livenessProbe": {
+                    **_http_probe("http"),
+                    "initialDelaySeconds": 15,
+                    "periodSeconds": 30,
+                    "failureThreshold": 3,
+                },
+                "readinessProbe": _http_probe("http"),
                 "env": {
                     "API_SERVER_ENABLED": "true",
                     "API_SERVER_HOST": "0.0.0.0",
@@ -419,6 +446,13 @@ def _template_manifest(template_id: str, params: dict[str, Any]) -> dict[str, An
                 "execution": {"mode": "session", "timeoutSeconds": 172800},
                 "ports": [{"name": "gateway", "port": port}],
                 "persistence": {"enabled": True, "mountPath": "/workspace"},
+                "livenessProbe": {
+                    **_tcp_probe("gateway"),
+                    "initialDelaySeconds": 15,
+                    "periodSeconds": 30,
+                    "failureThreshold": 3,
+                },
+                "readinessProbe": _tcp_probe("gateway"),
                 "agent": {
                     "adapter": "openclaw",
                     "toolOwnership": "runtime",
