@@ -58,6 +58,7 @@ from app.models.workloads import (
     DeploymentPlanResponse,
     DeploymentRequest,
     DeploymentResponse,
+    PreflightAction,
     PreflightCheck,
     PreflightRequest,
     PreflightResponse,
@@ -1227,6 +1228,181 @@ def _preflight_recommendations(checks: list[PreflightCheck]) -> list[str]:
     return recommendations
 
 
+def _preflight_action_guide(
+    checks: list[PreflightCheck],
+    *,
+    workload: WorkloadDefinition,
+    target: str,
+    env: str,
+) -> list[PreflightAction]:
+    actions: list[PreflightAction] = []
+    missing_secrets = _preflight_missing_secrets(checks)
+    if missing_secrets:
+        local_secret_lines = "\\n".join(f"{name}=..." for name in missing_secrets)
+        kubernetes_secret_args = " ".join(
+            f"--from-literal={name}=..." for name in missing_secrets
+        )
+        actions.append(
+            PreflightAction(
+                title="Set Missing Secrets",
+                state="missing",
+                detail=(
+                    "Required secret names are missing: "
+                    f"{', '.join(missing_secrets)}. Values stay outside the API "
+                    "and UI."
+                ),
+                command=(
+                    f"kubectl create secret generic moiraweave-secrets {kubernetes_secret_args}"
+                    if target == "kubernetes"
+                    else f"printf '{local_secret_lines}\\n' >> .env"
+                ),
+            )
+        )
+
+    for check in checks:
+        if check.status == "passed":
+            continue
+        if check.name == "secrets" and missing_secrets:
+            continue
+        if check.name == "deployment_record":
+            actions.append(
+                PreflightAction(
+                    title="Sync Deployment Record",
+                    state=check.status,
+                    detail=(
+                        check.remediation
+                        or f"Register or sync the {target}/{env} deployment record."
+                    ),
+                    command=_preflight_deployment_register_command(target, env),
+                )
+            )
+            continue
+        if check.name == "worker_dispatch":
+            actions.append(
+                PreflightAction(
+                    title="Restore Worker Dispatch",
+                    state=check.status,
+                    detail=(
+                        check.remediation
+                        or "The API cannot see an attached worker consumer."
+                    ),
+                    command=_preflight_platform_log_command("worker", target),
+                )
+            )
+            continue
+        if check.name == "runtime_reachability":
+            actions.append(
+                PreflightAction(
+                    title="Fix Runtime Reachability",
+                    state=check.status,
+                    detail=(
+                        check.remediation
+                        or "The registered endpoint did not respond from the control plane."
+                    ),
+                    command=_preflight_workload_log_command(workload, target),
+                )
+            )
+            continue
+        if check.name in {"postgres", "redis"}:
+            actions.append(
+                PreflightAction(
+                    title=f"Restore {_preflight_check_title(check.name)}",
+                    state=check.status,
+                    detail=check.remediation or check.message,
+                    command=_preflight_platform_log_command(check.name, target),
+                )
+            )
+            continue
+        if check.name == "deployment_target":
+            actions.append(
+                PreflightAction(
+                    title="Choose Supported Target",
+                    state=check.status,
+                    detail=check.remediation or check.message,
+                )
+            )
+            continue
+        if check.name == "runtime_boundaries":
+            actions.append(
+                PreflightAction(
+                    title="Adjust Runtime Boundaries",
+                    state=check.status,
+                    detail=check.remediation or check.message,
+                )
+            )
+            continue
+        if check.name == "runtime_location":
+            actions.append(
+                PreflightAction(
+                    title="Complete Runtime Location",
+                    state=check.status,
+                    detail=check.remediation or check.message,
+                )
+            )
+            continue
+        actions.append(
+            PreflightAction(
+                title=_preflight_check_title(check.name),
+                state=check.status,
+                detail=check.remediation or check.message,
+            )
+        )
+
+    if actions:
+        return actions
+    return [
+        PreflightAction(
+            title="Ready",
+            state="ready",
+            detail=(
+                "No blocking action detected for this workload, target, and "
+                "environment from the control-plane perspective."
+            ),
+            command=(
+                f'moira agent chat {workload.metadata.name} "hello" --watch'
+                if workload.spec.type == "agent-service"
+                else f"moira run submit {workload.metadata.name} --watch"
+            ),
+        )
+    ]
+
+
+def _preflight_missing_secrets(checks: list[PreflightCheck]) -> list[str]:
+    secret_check = next((check for check in checks if check.name == "secrets"), None)
+    missing = secret_check.metadata.get("missing") if secret_check else None
+    if not isinstance(missing, list):
+        return []
+    return sorted({str(name) for name in missing if str(name)})
+
+
+def _preflight_check_title(name: str) -> str:
+    return " ".join(part.capitalize() for part in name.split("_"))
+
+
+def _preflight_deployment_register_command(target: str, env: str) -> str:
+    if target == "kubernetes":
+        return f"moira deploy k8s --env {env} --register"
+    return "moira deploy local --register"
+
+
+def _preflight_platform_log_command(component: str, target: str) -> str | None:
+    if target == "local":
+        return f"docker compose logs {component}"
+    if target == "kubernetes":
+        return f"kubectl logs deploy/moiraweave-{component}"
+    return None
+
+
+def _preflight_workload_log_command(
+    workload: WorkloadDefinition, target: str
+) -> str | None:
+    if target == "local":
+        return f"docker compose logs {workload.metadata.name}"
+    if target == "kubernetes":
+        return f"kubectl logs deploy/{workload.metadata.name}"
+    return None
+
+
 def _is_secret_present(name: str) -> bool:
     value = os.getenv(name)
     return value is not None and value != ""
@@ -1800,6 +1976,12 @@ async def _run_preflight(
         status=_preflight_status(checks),
         checks=checks,
         recommendations=_preflight_recommendations(checks),
+        action_guide=_preflight_action_guide(
+            checks,
+            workload=workload,
+            target=normalized_target,
+            env=env,
+        ),
     )
 
 

@@ -112,12 +112,20 @@ class PreflightCheck(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class PreflightAction(BaseModel):
+    title: str
+    state: str
+    detail: str
+    command: str | None = None
+
+
 class PreflightResponse(BaseModel):
     workload_name: str
     target: str
     status: str = Field(pattern="^(passed|warning|failed)$")
     checks: list[PreflightCheck]
     recommendations: list[str] = Field(default_factory=list)
+    action_guide: list[PreflightAction] = Field(default_factory=list)
 
 
 class SecretInventoryItem(BaseModel):

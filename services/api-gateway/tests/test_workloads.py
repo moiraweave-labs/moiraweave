@@ -708,6 +708,13 @@ async def test_preflight_reports_secret_warnings(
     assert body["status"] == "warning"
     secrets = next(check for check in body["checks"] if check["name"] == "secrets")
     assert "OPENAI_API_KEY" in secrets["metadata"]["missing"]
+    secret_action = next(
+        item for item in body["action_guide"] if item["title"] == "Set Missing Secrets"
+    )
+    assert secret_action["state"] == "missing"
+    assert "OPENAI_API_KEY" in secret_action["detail"]
+    assert "Values stay outside the API and UI." in secret_action["detail"]
+    assert "OPENAI_API_KEY=..." in secret_action["command"]
 
 
 async def test_preflight_reports_missing_deployment_record(
@@ -728,6 +735,13 @@ async def test_preflight_reports_missing_deployment_record(
     assert deployment_record["status"] == "warning"
     assert "moira deploy local" in deployment_record["remediation"]
     assert deployment_record["remediation"] in body["recommendations"]
+    sync_action = next(
+        item
+        for item in body["action_guide"]
+        if item["title"] == "Sync Deployment Record"
+    )
+    assert sync_action["state"] == "warning"
+    assert sync_action["command"] == "moira deploy local --register"
 
 
 async def test_preflight_probes_registered_runtime_endpoint(
@@ -783,7 +797,9 @@ async def test_preflight_reports_missing_worker_consumer(
 async def test_preflight_passes_with_worker_consumer(
     auth_client: AsyncClient,
     fake_redis: FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     await _register(auth_client)
     await fake_redis.xgroup_create(RUN_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
     await fake_redis.xadd(RUN_STREAM, {"run_id": "run-worker-check"})
@@ -803,6 +819,58 @@ async def test_preflight_passes_with_worker_consumer(
     checks = {check["name"]: check for check in resp.json()["checks"]}
     assert checks["worker_dispatch"]["status"] == "passed"
     assert checks["worker_dispatch"]["metadata"]["consumers"] == 1
+
+
+async def test_preflight_action_guide_reports_ready_when_checks_pass(
+    auth_client: AsyncClient,
+    fake_redis: FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    await _register(auth_client)
+    await fake_redis.xgroup_create(RUN_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
+    await fake_redis.xadd(RUN_STREAM, {"run_id": "run-ready-check"})
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "worker-test",
+        streams={RUN_STREAM: ">"},
+        count=1,
+    )
+
+    async def _probe(_deployment: object) -> tuple[bool, str]:
+        return True, "runtime is reachable"
+
+    monkeypatch.setattr("app.routes.workloads._probe_deployment_endpoint", _probe)
+    deploy = await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={
+            "target": "local",
+            "env": "local",
+            "status": "running",
+            "endpoint": "http://hermes:8000",
+        },
+    )
+    assert deploy.status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "local", "env": "local"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "passed"
+    assert body["action_guide"] == [
+        {
+            "title": "Ready",
+            "state": "ready",
+            "detail": (
+                "No blocking action detected for this workload, target, and "
+                "environment from the control-plane perspective."
+            ),
+            "command": 'moira agent chat hermes "hello" --watch',
+        }
+    ]
 
 
 async def test_preflight_reports_runtime_boundaries(
@@ -836,6 +904,37 @@ async def test_preflight_reports_runtime_boundaries(
     assert runtime["metadata"]["networkEgress"] == "disabled"
     assert "workspace" in runtime["remediation"].lower()
     assert "web search" in runtime["remediation"].lower()
+
+
+async def test_preflight_external_runtime_uses_external_safe_actions(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = _agent_manifest("external-hermes")
+    spec = external["spec"]
+    spec.pop("image", None)
+    spec["endpoint"] = "https://agents.example.com/hermes"
+    spec["deployment"] = {"mode": "external"}
+
+    register = await auth_client.post("/v1/workloads", json=external)
+    assert register.status_code == 201
+
+    async def _probe(_deployment: object) -> tuple[bool, str]:
+        return False, "external runtime is not reachable"
+
+    monkeypatch.setattr("app.routes.workloads._probe_deployment_endpoint", _probe)
+    resp = await auth_client.post(
+        "/v1/workloads/external-hermes/preflight",
+        json={"target": "external", "env": "local"},
+    )
+
+    assert resp.status_code == 200
+    actions = {item["title"]: item for item in resp.json()["action_guide"]}
+    assert actions["Sync Deployment Record"]["command"] == (
+        "moira deploy local --register"
+    )
+    assert actions["Restore Worker Dispatch"]["command"] is None
+    assert actions["Fix Runtime Reachability"]["command"] is None
 
 
 async def test_secret_inventory_lists_required_names_without_values(
