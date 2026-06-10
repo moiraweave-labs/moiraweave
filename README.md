@@ -60,6 +60,22 @@ uv sync --frozen --all-packages
 make ci
 ```
 
+## Real Agent Certification
+
+Hermes and OpenClaw have optional live-runtime tests. They are skipped in normal
+CI and should be run only against runtimes you control:
+
+```bash
+MOIRAWEAVE_REAL_AGENT_TESTS=1 \
+MOIRAWEAVE_REAL_HERMES_URL=http://localhost:8642 \
+MOIRAWEAVE_REAL_OPENCLAW_URL=http://localhost:18789 \
+make test-real-agents
+```
+
+Turn tests are gated separately because they create real agent work and may call
+external providers. Use `MOIRAWEAVE_REAL_HERMES_TURN_TEST=1` or
+`MOIRAWEAVE_REAL_OPENCLAW_TURN_TEST=1` when that is intentional.
+
 ## CI/CD summary
 
 - `ci.yml`: lint, typecheck, tests, image build and security scan

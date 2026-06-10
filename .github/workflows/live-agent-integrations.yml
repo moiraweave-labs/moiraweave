@@ -84,6 +84,4 @@ jobs:
           MOIRAWEAVE_REAL_AGENT_TURN_TIMEOUT_SECONDS: ${{ inputs.turn_timeout_seconds }}
           HERMES_API_SERVER_KEY: ${{ secrets.HERMES_API_SERVER_KEY }}
           OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
-        run: >
-          uv run pytest services/worker/tests/test_real_agent_runtimes.py
-          --no-cov -q
+        run: make test-real-agents
