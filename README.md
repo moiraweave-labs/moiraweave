@@ -49,7 +49,10 @@ when there are no workloads, starts API, worker, Postgres, Redis, Qdrant, UI,
 and workload services, then registers deployment records.
 
 Local development auth uses `DEMO_USERNAME`, `DEMO_PASSWORD`, and `DEMO_ROLE`.
-Automation can use bearer API keys through `MOIRA_API_KEYS`, with comma-separated
+Admins can create, list, and revoke hashed API keys from the Security screen or
+the `/auth/api-keys` API; the secret is returned once, while metadata and
+revocation state stay in Postgres and lifecycle changes are audited. Static
+bootstrap keys are still supported through `MOIRA_API_KEYS` as comma-separated
 `key:subject:role` entries. Roles are `viewer`, `operator`, and `admin`.
 Clients can resolve the active credential through `GET /auth/me`.
 

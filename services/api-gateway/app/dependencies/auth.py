@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 
 from app.config import get_settings
+from app.dependencies.control_plane import ControlPlane  # noqa: TC001
 from app.models.auth import TokenData
 
 _bearer_scheme = HTTPBearer()
@@ -32,7 +33,7 @@ def _api_key_id(secret: str) -> str:
     return sha256(secret.encode()).hexdigest()[:12]
 
 
-def _api_key_user(token: str) -> TokenData | None:
+async def _api_key_user(token: str, control_plane: ControlPlane) -> TokenData | None:
     settings = get_settings()
     for raw_entry in settings.moira_api_keys.split(","):
         entry = raw_entry.strip()
@@ -48,11 +49,21 @@ def _api_key_user(token: str) -> TokenData | None:
                 role=_normalize_role(role),
                 api_key_id=_api_key_id(secret),
             )
-    return None
+    secret_hash = sha256(token.encode()).hexdigest()
+    stored = await control_plane.get_api_key_by_secret_hash(secret_hash)
+    if stored is None:
+        return None
+    await control_plane.touch_api_key(stored.key_id)
+    return TokenData(
+        subject=stored.subject,
+        role=_normalize_role(stored.role),
+        api_key_id=stored.key_id,
+    )
 
 
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_scheme)],
+    control_plane: ControlPlane,
 ) -> TokenData:
     """Validate Bearer JWT or configured API key and return the token payload.
 
@@ -72,7 +83,7 @@ async def get_current_user(
             raise exc
         return TokenData(subject=subject, role=_normalize_role(payload.get("role")))
     except InvalidTokenError as err:
-        api_key_user = _api_key_user(token)
+        api_key_user = await _api_key_user(token, control_plane)
         if api_key_user is not None:
             return api_key_user
         raise exc from err

@@ -217,6 +217,27 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON deployment_operations (user_subject, environment, created_at DESC);
         """,
     ),
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            key_id text PRIMARY KEY,
+            name text NOT NULL,
+            secret_hash text NOT NULL UNIQUE,
+            secret_prefix text NOT NULL,
+            subject text NOT NULL,
+            role text NOT NULL,
+            created_by text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            last_used_at timestamptz,
+            revoked_at timestamptz
+        );
+
+        CREATE INDEX IF NOT EXISTS api_keys_active_subject_idx
+            ON api_keys (subject, role, created_at DESC)
+            WHERE revoked_at IS NULL;
+        """,
+    ),
 )
 
 
@@ -371,6 +392,19 @@ class StoredAuditEvent(BaseModel):
     resource_type: str
     resource_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StoredApiKey(BaseModel):
+    key_id: str
+    name: str
+    secret_hash: str
+    secret_prefix: str
+    subject: str
+    role: str
+    created_by: str
+    created_at: str
+    last_used_at: str | None = None
+    revoked_at: str | None = None
 
 
 class ControlPlaneRepository(Protocol):
@@ -581,6 +615,33 @@ class ControlPlaneRepository(Protocol):
         offset: int = 0,
     ) -> list[StoredAuditEvent]: ...
 
+    async def create_api_key(
+        self,
+        key_id: str,
+        name: str,
+        secret_hash: str,
+        secret_prefix: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredApiKey: ...
+
+    async def list_api_keys(self) -> list[StoredApiKey]: ...
+
+    async def get_api_key_by_secret_hash(
+        self, secret_hash: str
+    ) -> StoredApiKey | None: ...
+
+    async def touch_api_key(
+        self, key_id: str, *, last_used_at: str | None = None
+    ) -> StoredApiKey | None: ...
+
+    async def revoke_api_key(
+        self, key_id: str, *, revoked_at: str | None = None
+    ) -> StoredApiKey | None: ...
+
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
     ) -> list[StoredRun]: ...
@@ -603,6 +664,7 @@ class InMemoryControlPlaneRepository:
         ] = {}
         self.channel_messages: list[StoredChannelMessage] = []
         self.audit_events: list[StoredAuditEvent] = []
+        self.api_keys: dict[str, StoredApiKey] = {}
         self._event_id = 0
         self._message_id = 0
         self._deployment_operation_event_id = 0
@@ -1021,6 +1083,70 @@ class InMemoryControlPlaneRepository:
         ]
         events.sort(key=lambda event: event.timestamp, reverse=True)
         return events[offset : offset + limit]
+
+    async def create_api_key(
+        self,
+        key_id: str,
+        name: str,
+        secret_hash: str,
+        secret_prefix: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredApiKey:
+        timestamp = now or utc_now_iso()
+        api_key = StoredApiKey(
+            key_id=key_id,
+            name=name,
+            secret_hash=secret_hash,
+            secret_prefix=secret_prefix,
+            subject=subject,
+            role=role,
+            created_by=created_by,
+            created_at=timestamp,
+        )
+        self.api_keys[key_id] = api_key
+        return api_key
+
+    async def list_api_keys(self) -> list[StoredApiKey]:
+        keys = list(self.api_keys.values())
+        return sorted(keys, key=lambda item: item.created_at, reverse=True)
+
+    async def get_api_key_by_secret_hash(self, secret_hash: str) -> StoredApiKey | None:
+        return next(
+            (
+                item
+                for item in self.api_keys.values()
+                if item.secret_hash == secret_hash and item.revoked_at is None
+            ),
+            None,
+        )
+
+    async def touch_api_key(
+        self, key_id: str, *, last_used_at: str | None = None
+    ) -> StoredApiKey | None:
+        api_key = self.api_keys.get(key_id)
+        if api_key is None:
+            return None
+        updated = api_key.model_copy(
+            update={"last_used_at": last_used_at or utc_now_iso()}
+        )
+        self.api_keys[key_id] = updated
+        return updated
+
+    async def revoke_api_key(
+        self, key_id: str, *, revoked_at: str | None = None
+    ) -> StoredApiKey | None:
+        api_key = self.api_keys.get(key_id)
+        if api_key is None:
+            return None
+        updated = api_key.model_copy(
+            update={"revoked_at": api_key.revoked_at or revoked_at or utc_now_iso()}
+        )
+        self.api_keys[key_id] = updated
+        return updated
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -1726,6 +1852,95 @@ class PostgresControlPlaneRepository:
         )
         return [_audit_event_from_row(row) for row in rows]
 
+    async def create_api_key(
+        self,
+        key_id: str,
+        name: str,
+        secret_hash: str,
+        secret_prefix: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredApiKey:
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO api_keys (
+                key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz)
+            RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at, last_used_at, revoked_at
+            """,
+            key_id,
+            name,
+            secret_hash,
+            secret_prefix,
+            subject,
+            role,
+            created_by,
+            _pg_timestamp(now or utc_now_iso()),
+        )
+        return _api_key_from_row(row)
+
+    async def list_api_keys(self) -> list[StoredApiKey]:
+        rows = await self.pool.fetch(
+            """
+            SELECT key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at, last_used_at, revoked_at
+            FROM api_keys
+            ORDER BY created_at DESC
+            """
+        )
+        return [_api_key_from_row(row) for row in rows]
+
+    async def get_api_key_by_secret_hash(self, secret_hash: str) -> StoredApiKey | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at, last_used_at, revoked_at
+            FROM api_keys
+            WHERE secret_hash = $1
+              AND revoked_at IS NULL
+            """,
+            secret_hash,
+        )
+        return _api_key_from_row(row) if row else None
+
+    async def touch_api_key(
+        self, key_id: str, *, last_used_at: str | None = None
+    ) -> StoredApiKey | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE api_keys
+            SET last_used_at = $2::timestamptz
+            WHERE key_id = $1
+            RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at, last_used_at, revoked_at
+            """,
+            key_id,
+            _pg_timestamp(last_used_at or utc_now_iso()),
+        )
+        return _api_key_from_row(row) if row else None
+
+    async def revoke_api_key(
+        self, key_id: str, *, revoked_at: str | None = None
+    ) -> StoredApiKey | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE api_keys
+            SET revoked_at = COALESCE(revoked_at, $2::timestamptz)
+            WHERE key_id = $1
+            RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
+                created_by, created_at, last_used_at, revoked_at
+            """,
+            key_id,
+            _pg_timestamp(revoked_at or utc_now_iso()),
+        )
+        return _api_key_from_row(row) if row else None
+
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
     ) -> list[StoredRun]:
@@ -1903,6 +2118,21 @@ def _audit_event_from_row(row: Any) -> StoredAuditEvent:
         resource_type=str(row["resource_type"]),
         resource_id=str(row["resource_id"]),
         metadata=_json_dict(row["metadata"]) or {},
+    )
+
+
+def _api_key_from_row(row: Any) -> StoredApiKey:
+    return StoredApiKey(
+        key_id=str(row["key_id"]),
+        name=str(row["name"]),
+        secret_hash=str(row["secret_hash"]),
+        secret_prefix=str(row["secret_prefix"]),
+        subject=str(row["subject"]),
+        role=str(row["role"]),
+        created_by=str(row["created_by"]),
+        created_at=str(_iso(row["created_at"])),
+        last_used_at=_iso(row["last_used_at"]),
+        revoked_at=_iso(row["revoked_at"]),
     )
 
 

@@ -129,6 +129,94 @@ async def test_me_returns_api_key_profile(
     assert body["api_key_id"] != "local-dev-key"
 
 
+async def test_admin_can_create_use_and_revoke_persistent_api_key(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+
+    created = await client.post(
+        "/auth/api-keys",
+        json={"name": "ci deploy", "subject": "ci", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    body = created.json()
+
+    assert created.status_code == 201
+    assert body["key_id"]
+    assert body["secret"].startswith("mwk_")
+    assert body["secret_prefix"].endswith("...")
+    assert body["secret"] not in body["secret_prefix"]
+    assert body["subject"] == "ci"
+    assert body["role"] == "operator"
+    assert body["revoked_at"] is None
+
+    profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {body['secret']}"},
+    )
+    assert profile.status_code == 200
+    assert profile.json() == {
+        "subject": "ci",
+        "role": "operator",
+        "credential_type": "api_key",
+        "api_key_id": body["key_id"],
+    }
+
+    keys = await client.get(
+        "/auth/api-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    listed = keys.json()[0]
+    assert keys.status_code == 200
+    assert "secret" not in listed
+    assert listed["last_used_at"] is not None
+
+    revoked = await client.delete(
+        f"/auth/api-keys/{body['key_id']}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["revoked_at"] is not None
+
+    rejected = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {body['secret']}"},
+    )
+    assert rejected.status_code == 401
+
+    audit = await client.get(
+        "/v1/audit-events?resource_type=api_key",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    actions = {event["action"] for event in audit.json()}
+    assert {"api_key.create", "api_key.revoke"} <= actions
+
+
+async def test_operator_cannot_manage_persistent_api_keys(
+    client: AsyncClient,
+) -> None:
+    operator_token = _token("operator", "operator")
+
+    response = await client.post(
+        "/auth/api-keys",
+        json={"name": "blocked", "subject": "ci", "role": "operator"},
+        headers={"Authorization": f"Bearer {operator_token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Requires admin role"
+
+
+async def test_api_key_creation_rejects_blank_subject(client: AsyncClient) -> None:
+    response = await client.post(
+        "/auth/api-keys",
+        json={"name": "ci deploy", "subject": "   ", "role": "operator"},
+        headers={"Authorization": f"Bearer {_token('admin', 'admin')}"},
+    )
+
+    assert response.status_code == 422
+
+
 async def test_viewer_cannot_register_workload(client: AsyncClient) -> None:
     response = await client.post(
         "/v1/workloads",
