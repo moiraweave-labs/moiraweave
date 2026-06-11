@@ -192,6 +192,85 @@ async def test_admin_can_create_use_and_revoke_persistent_api_key(
     assert {"api_key.create", "api_key.revoke"} <= actions
 
 
+async def test_admin_can_rotate_persistent_api_key(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    created = await client.post(
+        "/auth/api-keys",
+        json={"name": "bot", "subject": "automation", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    original = created.json()
+
+    rotated = await client.post(
+        f"/auth/api-keys/{original['key_id']}/rotate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    replacement = rotated.json()
+
+    assert rotated.status_code == 201
+    assert replacement["key_id"] != original["key_id"]
+    assert replacement["secret"] != original["secret"]
+    assert replacement["name"] == "bot"
+    assert replacement["subject"] == "automation"
+    assert replacement["role"] == "operator"
+    assert replacement["revoked_at"] is None
+
+    old_profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {original['secret']}"},
+    )
+    new_profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {replacement['secret']}"},
+    )
+
+    assert old_profile.status_code == 401
+    assert new_profile.status_code == 200
+    assert new_profile.json()["api_key_id"] == replacement["key_id"]
+
+    listed = await client.get(
+        "/auth/api-keys",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    keys = {item["key_id"]: item for item in listed.json()}
+    assert keys[original["key_id"]]["revoked_at"] is not None
+    assert keys[replacement["key_id"]]["revoked_at"] is None
+
+    audit = await client.get(
+        "/v1/audit-events?action=api_key.rotate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == replacement["key_id"]
+    assert audit.json()[0]["metadata"]["previous_key_id"] == original["key_id"]
+
+
+async def test_rotating_revoked_api_key_returns_409(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    created = await client.post(
+        "/auth/api-keys",
+        json={"name": "bot", "subject": "automation", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    key_id = created.json()["key_id"]
+    await client.delete(
+        f"/auth/api-keys/{key_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    rotated = await client.post(
+        f"/auth/api-keys/{key_id}/rotate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert rotated.status_code == 409
+    assert rotated.json()["detail"] == "API key is already revoked"
+
+
 async def test_operator_cannot_manage_persistent_api_keys(
     client: AsyncClient,
 ) -> None:

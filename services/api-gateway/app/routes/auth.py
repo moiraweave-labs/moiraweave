@@ -62,6 +62,41 @@ def _api_key_response(api_key: StoredApiKey) -> ApiKeyResponse:
     )
 
 
+async def _find_api_key(
+    control_plane: ControlPlane, key_id: str
+) -> StoredApiKey | None:
+    return next(
+        (item for item in await control_plane.list_api_keys() if item.key_id == key_id),
+        None,
+    )
+
+
+async def _store_api_key(
+    control_plane: ControlPlane,
+    *,
+    name: str,
+    subject: str,
+    role: str,
+    created_by: str,
+    now: str,
+) -> tuple[StoredApiKey, str]:
+    secret = _api_key_secret()
+    secret_hash = sha256(secret.encode()).hexdigest()
+    return (
+        await control_plane.create_api_key(
+            secret_hash[:12],
+            name,
+            secret_hash,
+            f"{secret[:10]}...",
+            subject,
+            role,
+            created_by,
+            now=now,
+        ),
+        secret,
+    )
+
+
 async def _audit_auth(
     control_plane: ControlPlane,
     actor: str,
@@ -148,16 +183,12 @@ async def create_api_key(
 ) -> ApiKeyCreateResponse:
     """Create a hashed API key and return the secret once."""
 
-    secret = _api_key_secret()
-    secret_hash = sha256(secret.encode()).hexdigest()
-    api_key = await control_plane.create_api_key(
-        secret_hash[:12],
-        body.name,
-        secret_hash,
-        f"{secret[:10]}...",
-        body.subject,
-        body.role,
-        current_user.subject,
+    api_key, secret = await _store_api_key(
+        control_plane,
+        name=body.name,
+        subject=body.subject,
+        role=body.role,
+        created_by=current_user.subject,
         now=utc_now_iso(),
     )
     await _audit_auth(
@@ -173,6 +204,57 @@ async def create_api_key(
     )
     return ApiKeyCreateResponse(
         **_api_key_response(api_key).model_dump(),
+        secret=secret,
+    )
+
+
+@router.post(
+    "/api-keys/{key_id}/rotate",
+    response_model=ApiKeyCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Rotate API key",
+)
+async def rotate_api_key(
+    key_id: str,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> ApiKeyCreateResponse:
+    """Create a replacement API key and revoke the previous active key."""
+
+    existing = await _find_api_key(control_plane, key_id)
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
+        )
+    if existing.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="API key is already revoked"
+        )
+
+    now = utc_now_iso()
+    replacement, secret = await _store_api_key(
+        control_plane,
+        name=existing.name,
+        subject=existing.subject,
+        role=existing.role,
+        created_by=current_user.subject,
+        now=now,
+    )
+    await control_plane.revoke_api_key(existing.key_id, revoked_at=now)
+    await _audit_auth(
+        control_plane,
+        current_user.subject,
+        "api_key.rotate",
+        replacement.key_id,
+        metadata={
+            "previous_key_id": existing.key_id,
+            "subject": replacement.subject,
+            "role": replacement.role,
+            "name": replacement.name,
+        },
+    )
+    return ApiKeyCreateResponse(
+        **_api_key_response(replacement).model_dump(),
         secret=secret,
     )
 
