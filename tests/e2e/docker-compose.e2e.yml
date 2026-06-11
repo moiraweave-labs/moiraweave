@@ -38,6 +38,9 @@ services:
       JWT_SECRET_KEY: "${E2E_JWT_SECRET_KEY:-e2e-local-test-secret-not-for-production}"
       # OTel disabled for tests to reduce noise and avoid Jaeger dependency.
       OTEL_ENABLED: "false"
+      # E2E exercises the control plane, not semantic search. Keep FastEmbed
+      # disabled so stack startup does not depend on external model downloads.
+      EMBEDDING_MODEL: ""
       WORKLOADS_DIR: "/e2e-workloads"
     volumes:
       - ./tests/e2e/fixtures/workloads:/e2e-workloads:ro

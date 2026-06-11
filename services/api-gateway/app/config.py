@@ -36,7 +36,8 @@ class Settings(BaseSettings):
         "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
     )
 
-    # Qdrant — vector store for RAG/search workloads
+    # Qdrant — vector store for RAG/search workloads. Set EMBEDDING_MODEL=""
+    # to disable semantic search in tests or minimal control-plane deployments.
     qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 

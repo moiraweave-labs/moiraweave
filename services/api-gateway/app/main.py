@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         _settings.postgres_dsn
     )
     qdrant = AsyncQdrantClient(url=str(_settings.qdrant_url))
-    qdrant.set_model(_settings.embedding_model)
+    if _settings.embedding_model:
+        qdrant.set_model(_settings.embedding_model)
+    app.state.search_enabled = bool(_settings.embedding_model)
     app.state.qdrant = qdrant
     yield
     # shutdown
