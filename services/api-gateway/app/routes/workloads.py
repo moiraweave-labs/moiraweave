@@ -2189,8 +2189,7 @@ async def list_environments(
         offset=0,
     )
     envs: dict[str, EnvironmentInfo] = {
-        name: EnvironmentInfo(name=name)
-        for name in ["local", "dev", "staging", "prod"]
+        name: EnvironmentInfo(name=name) for name in ["local", "dev", "staging", "prod"]
     }
     workloads_by_env: dict[str, set[str]] = {}
 
