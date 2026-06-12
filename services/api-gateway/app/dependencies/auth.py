@@ -48,6 +48,7 @@ async def _api_key_user(token: str, control_plane: ControlPlane) -> TokenData | 
                 subject=subject,
                 role=_normalize_role(role),
                 api_key_id=_api_key_id(secret),
+                team_id=None,
             )
     secret_hash = sha256(token.encode()).hexdigest()
     stored = await control_plane.get_api_key_by_secret_hash(secret_hash)
@@ -58,6 +59,7 @@ async def _api_key_user(token: str, control_plane: ControlPlane) -> TokenData | 
         subject=stored.subject,
         role=_normalize_role(stored.role),
         api_key_id=stored.key_id,
+        team_id=stored.team_id,
     )
 
 

@@ -90,6 +90,8 @@ async def test_me_returns_jwt_profile(client: AsyncClient) -> None:
         "role": "operator",
         "credential_type": "jwt",
         "api_key_id": None,
+        "team_id": None,
+        "teams": [],
     }
 
 
@@ -160,6 +162,8 @@ async def test_admin_can_create_use_and_revoke_persistent_api_key(
         "role": "operator",
         "credential_type": "api_key",
         "api_key_id": body["key_id"],
+        "team_id": None,
+        "teams": [],
     }
 
     keys = await client.get(
@@ -294,6 +298,92 @@ async def test_api_key_creation_rejects_blank_subject(client: AsyncClient) -> No
     )
 
     assert response.status_code == 422
+
+
+async def test_admin_can_create_persistent_user_and_login(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+
+    created = await client.post(
+        "/auth/users",
+        json={
+            "subject": "alice",
+            "password": "correct-horse",
+            "role": "operator",
+            "display_name": "Alice Operator",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["subject"] == "alice"
+    assert created.json()["role"] == "operator"
+    assert "password_hash" not in created.json()
+
+    login = await client.post(
+        "/auth/token",
+        json={"username": "alice", "password": "correct-horse"},
+    )
+
+    assert login.status_code == 200
+    assert login.json()["subject"] == "alice"
+    assert login.json()["role"] == "operator"
+
+
+async def test_admin_can_manage_team_and_team_scoped_api_key(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={"subject": "team-bot", "password": "correct-horse", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    team = await client.post(
+        "/auth/teams",
+        json={
+            "team_id": "agents",
+            "name": "Agent Operators",
+            "description": "Runs production agents",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    member = await client.post(
+        "/auth/teams/agents/members",
+        json={"subject": "team-bot", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert team.status_code == 201
+    assert member.status_code == 201
+    assert member.json()["team_id"] == "agents"
+    assert member.json()["subject"] == "team-bot"
+
+    created_key = await client.post(
+        "/auth/api-keys",
+        json={
+            "name": "team automation",
+            "subject": "team-bot",
+            "role": "operator",
+            "team_id": "agents",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    key = created_key.json()
+
+    assert created_key.status_code == 201
+    assert key["team_id"] == "agents"
+
+    profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {key['secret']}"},
+    )
+
+    assert profile.status_code == 200
+    assert profile.json()["subject"] == "team-bot"
+    assert profile.json()["team_id"] == "agents"
+    assert profile.json()["teams"] == ["agents"]
 
 
 async def test_viewer_cannot_register_workload(client: AsyncClient) -> None:

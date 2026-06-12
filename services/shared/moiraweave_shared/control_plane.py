@@ -239,6 +239,52 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE revoked_at IS NULL;
         """,
     ),
+    (
+        7,
+        """
+        CREATE TABLE IF NOT EXISTS auth_users (
+            subject text PRIMARY KEY,
+            display_name text,
+            password_hash text NOT NULL,
+            role text NOT NULL,
+            created_by text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            disabled_at timestamptz
+        );
+
+        CREATE TABLE IF NOT EXISTS teams (
+            team_id text PRIMARY KEY,
+            name text NOT NULL UNIQUE,
+            description text,
+            created_by text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS team_members (
+            team_id text NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            subject text NOT NULL REFERENCES auth_users(subject) ON DELETE CASCADE,
+            role text NOT NULL,
+            created_by text NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (team_id, subject)
+        );
+
+        ALTER TABLE api_keys
+            ADD COLUMN IF NOT EXISTS team_id text REFERENCES teams(team_id)
+                ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS auth_users_role_idx
+            ON auth_users (role, created_at DESC)
+            WHERE disabled_at IS NULL;
+        CREATE INDEX IF NOT EXISTS team_members_subject_idx
+            ON team_members (subject, team_id);
+        CREATE INDEX IF NOT EXISTS api_keys_active_team_idx
+            ON api_keys (team_id, created_at DESC)
+            WHERE revoked_at IS NULL AND team_id IS NOT NULL;
+        """,
+    ),
 )
 
 
@@ -279,6 +325,13 @@ def _json_value(value: Any) -> Any:
 def _json_dict(value: Any) -> dict[str, Any] | None:
     parsed = _json_value(value)
     return parsed if isinstance(parsed, dict) else None
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 class StoredRun(BaseModel):
@@ -404,8 +457,37 @@ class StoredApiKey(BaseModel):
     role: str
     created_by: str
     created_at: str
+    team_id: str | None = None
     last_used_at: str | None = None
     revoked_at: str | None = None
+
+
+class StoredUser(BaseModel):
+    subject: str
+    display_name: str | None = None
+    password_hash: str
+    role: str
+    created_by: str
+    created_at: str
+    updated_at: str
+    disabled_at: str | None = None
+
+
+class StoredTeam(BaseModel):
+    team_id: str
+    name: str
+    description: str | None = None
+    created_by: str
+    created_at: str
+    updated_at: str
+
+
+class StoredTeamMember(BaseModel):
+    team_id: str
+    subject: str
+    role: str
+    created_by: str
+    created_at: str
 
 
 class ControlPlaneRepository(Protocol):
@@ -626,6 +708,7 @@ class ControlPlaneRepository(Protocol):
         role: str,
         created_by: str,
         *,
+        team_id: str | None = None,
         now: str | None = None,
     ) -> StoredApiKey: ...
 
@@ -642,6 +725,51 @@ class ControlPlaneRepository(Protocol):
     async def revoke_api_key(
         self, key_id: str, *, revoked_at: str | None = None
     ) -> StoredApiKey | None: ...
+
+    async def upsert_user(
+        self,
+        subject: str,
+        password_hash: str,
+        role: str,
+        created_by: str,
+        *,
+        display_name: str | None = None,
+        now: str | None = None,
+    ) -> StoredUser: ...
+
+    async def get_user(self, subject: str) -> StoredUser | None: ...
+
+    async def list_users(self) -> list[StoredUser]: ...
+
+    async def disable_user(
+        self, subject: str, *, disabled_at: str | None = None
+    ) -> StoredUser | None: ...
+
+    async def upsert_team(
+        self,
+        team_id: str,
+        name: str,
+        created_by: str,
+        *,
+        description: str | None = None,
+        now: str | None = None,
+    ) -> StoredTeam: ...
+
+    async def list_teams(self) -> list[StoredTeam]: ...
+
+    async def add_team_member(
+        self,
+        team_id: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredTeamMember: ...
+
+    async def list_team_members(
+        self, *, team_id: str | None = None, subject: str | None = None
+    ) -> list[StoredTeamMember]: ...
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -666,6 +794,9 @@ class InMemoryControlPlaneRepository:
         self.channel_messages: list[StoredChannelMessage] = []
         self.audit_events: list[StoredAuditEvent] = []
         self.api_keys: dict[str, StoredApiKey] = {}
+        self.users: dict[str, StoredUser] = {}
+        self.teams: dict[str, StoredTeam] = {}
+        self.team_members: dict[tuple[str, str], StoredTeamMember] = {}
         self._event_id = 0
         self._message_id = 0
         self._deployment_operation_event_id = 0
@@ -1096,6 +1227,7 @@ class InMemoryControlPlaneRepository:
         role: str,
         created_by: str,
         *,
+        team_id: str | None = None,
         now: str | None = None,
     ) -> StoredApiKey:
         timestamp = now or utc_now_iso()
@@ -1108,6 +1240,7 @@ class InMemoryControlPlaneRepository:
             role=role,
             created_by=created_by,
             created_at=timestamp,
+            team_id=team_id,
         )
         self.api_keys[key_id] = api_key
         return api_key
@@ -1149,6 +1282,109 @@ class InMemoryControlPlaneRepository:
         )
         self.api_keys[key_id] = updated
         return updated
+
+    async def upsert_user(
+        self,
+        subject: str,
+        password_hash: str,
+        role: str,
+        created_by: str,
+        *,
+        display_name: str | None = None,
+        now: str | None = None,
+    ) -> StoredUser:
+        timestamp = now or utc_now_iso()
+        existing = self.users.get(subject)
+        user = StoredUser(
+            subject=subject,
+            display_name=display_name,
+            password_hash=password_hash,
+            role=role,
+            created_by=existing.created_by if existing else created_by,
+            created_at=existing.created_at if existing else timestamp,
+            updated_at=timestamp,
+            disabled_at=None,
+        )
+        self.users[subject] = user
+        return user
+
+    async def get_user(self, subject: str) -> StoredUser | None:
+        return self.users.get(subject)
+
+    async def list_users(self) -> list[StoredUser]:
+        users = list(self.users.values())
+        return sorted(users, key=lambda item: item.created_at, reverse=True)
+
+    async def disable_user(
+        self, subject: str, *, disabled_at: str | None = None
+    ) -> StoredUser | None:
+        user = self.users.get(subject)
+        if user is None:
+            return None
+        updated = user.model_copy(
+            update={
+                "disabled_at": user.disabled_at or disabled_at or utc_now_iso(),
+                "updated_at": utc_now_iso(),
+            }
+        )
+        self.users[subject] = updated
+        return updated
+
+    async def upsert_team(
+        self,
+        team_id: str,
+        name: str,
+        created_by: str,
+        *,
+        description: str | None = None,
+        now: str | None = None,
+    ) -> StoredTeam:
+        timestamp = now or utc_now_iso()
+        existing = self.teams.get(team_id)
+        team = StoredTeam(
+            team_id=team_id,
+            name=name,
+            description=description,
+            created_by=existing.created_by if existing else created_by,
+            created_at=existing.created_at if existing else timestamp,
+            updated_at=timestamp,
+        )
+        self.teams[team_id] = team
+        return team
+
+    async def list_teams(self) -> list[StoredTeam]:
+        teams = list(self.teams.values())
+        return sorted(teams, key=lambda item: item.created_at, reverse=True)
+
+    async def add_team_member(
+        self,
+        team_id: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredTeamMember:
+        member = StoredTeamMember(
+            team_id=team_id,
+            subject=subject,
+            role=role,
+            created_by=created_by,
+            created_at=now or utc_now_iso(),
+        )
+        self.team_members[(team_id, subject)] = member
+        return member
+
+    async def list_team_members(
+        self, *, team_id: str | None = None, subject: str | None = None
+    ) -> list[StoredTeamMember]:
+        members = [
+            item
+            for item in self.team_members.values()
+            if (team_id is None or item.team_id == team_id)
+            and (subject is None or item.subject == subject)
+        ]
+        return sorted(members, key=lambda item: item.created_at, reverse=True)
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -1885,17 +2121,18 @@ class PostgresControlPlaneRepository:
         role: str,
         created_by: str,
         *,
+        team_id: str | None = None,
         now: str | None = None,
     ) -> StoredApiKey:
         row = await self.pool.fetchrow(
             """
             INSERT INTO api_keys (
                 key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at
+                created_by, team_id, created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz)
             RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at, last_used_at, revoked_at
+                created_by, team_id, created_at, last_used_at, revoked_at
             """,
             key_id,
             name,
@@ -1904,6 +2141,7 @@ class PostgresControlPlaneRepository:
             subject,
             role,
             created_by,
+            team_id,
             _pg_timestamp(now or utc_now_iso()),
         )
         return _api_key_from_row(row)
@@ -1912,7 +2150,7 @@ class PostgresControlPlaneRepository:
         rows = await self.pool.fetch(
             """
             SELECT key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at, last_used_at, revoked_at
+                created_by, team_id, created_at, last_used_at, revoked_at
             FROM api_keys
             ORDER BY created_at DESC
             """
@@ -1923,7 +2161,7 @@ class PostgresControlPlaneRepository:
         row = await self.pool.fetchrow(
             """
             SELECT key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at, last_used_at, revoked_at
+                created_by, team_id, created_at, last_used_at, revoked_at
             FROM api_keys
             WHERE secret_hash = $1
               AND revoked_at IS NULL
@@ -1941,7 +2179,7 @@ class PostgresControlPlaneRepository:
             SET last_used_at = $2::timestamptz
             WHERE key_id = $1
             RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at, last_used_at, revoked_at
+                created_by, team_id, created_at, last_used_at, revoked_at
             """,
             key_id,
             _pg_timestamp(last_used_at or utc_now_iso()),
@@ -1957,12 +2195,167 @@ class PostgresControlPlaneRepository:
             SET revoked_at = COALESCE(revoked_at, $2::timestamptz)
             WHERE key_id = $1
             RETURNING key_id, name, secret_hash, secret_prefix, subject, role,
-                created_by, created_at, last_used_at, revoked_at
+                created_by, team_id, created_at, last_used_at, revoked_at
             """,
             key_id,
             _pg_timestamp(revoked_at or utc_now_iso()),
         )
         return _api_key_from_row(row) if row else None
+
+    async def upsert_user(
+        self,
+        subject: str,
+        password_hash: str,
+        role: str,
+        created_by: str,
+        *,
+        display_name: str | None = None,
+        now: str | None = None,
+    ) -> StoredUser:
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO auth_users (
+                subject, display_name, password_hash, role, created_by,
+                created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $6::timestamptz)
+            ON CONFLICT (subject) DO UPDATE SET
+                display_name = EXCLUDED.display_name,
+                password_hash = EXCLUDED.password_hash,
+                role = EXCLUDED.role,
+                updated_at = EXCLUDED.updated_at,
+                disabled_at = NULL
+            RETURNING subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            """,
+            subject,
+            display_name,
+            password_hash,
+            role,
+            created_by,
+            _pg_timestamp(now or utc_now_iso()),
+        )
+        return _user_from_row(row)
+
+    async def get_user(self, subject: str) -> StoredUser | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            FROM auth_users
+            WHERE subject = $1
+            """,
+            subject,
+        )
+        return _user_from_row(row) if row else None
+
+    async def list_users(self) -> list[StoredUser]:
+        rows = await self.pool.fetch(
+            """
+            SELECT subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            FROM auth_users
+            ORDER BY created_at DESC
+            """
+        )
+        return [_user_from_row(row) for row in rows]
+
+    async def disable_user(
+        self, subject: str, *, disabled_at: str | None = None
+    ) -> StoredUser | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE auth_users
+            SET disabled_at = COALESCE(disabled_at, $2::timestamptz),
+                updated_at = $2::timestamptz
+            WHERE subject = $1
+            RETURNING subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            """,
+            subject,
+            _pg_timestamp(disabled_at or utc_now_iso()),
+        )
+        return _user_from_row(row) if row else None
+
+    async def upsert_team(
+        self,
+        team_id: str,
+        name: str,
+        created_by: str,
+        *,
+        description: str | None = None,
+        now: str | None = None,
+    ) -> StoredTeam:
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO teams (
+                team_id, name, description, created_by, created_at, updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz)
+            ON CONFLICT (team_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                updated_at = EXCLUDED.updated_at
+            RETURNING team_id, name, description, created_by, created_at, updated_at
+            """,
+            team_id,
+            name,
+            description,
+            created_by,
+            _pg_timestamp(now or utc_now_iso()),
+        )
+        return _team_from_row(row)
+
+    async def list_teams(self) -> list[StoredTeam]:
+        rows = await self.pool.fetch(
+            """
+            SELECT team_id, name, description, created_by, created_at, updated_at
+            FROM teams
+            ORDER BY created_at DESC
+            """
+        )
+        return [_team_from_row(row) for row in rows]
+
+    async def add_team_member(
+        self,
+        team_id: str,
+        subject: str,
+        role: str,
+        created_by: str,
+        *,
+        now: str | None = None,
+    ) -> StoredTeamMember:
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO team_members (team_id, subject, role, created_by, created_at)
+            VALUES ($1, $2, $3, $4, $5::timestamptz)
+            ON CONFLICT (team_id, subject) DO UPDATE SET
+                role = EXCLUDED.role
+            RETURNING team_id, subject, role, created_by, created_at
+            """,
+            team_id,
+            subject,
+            role,
+            created_by,
+            _pg_timestamp(now or utc_now_iso()),
+        )
+        return _team_member_from_row(row)
+
+    async def list_team_members(
+        self, *, team_id: str | None = None, subject: str | None = None
+    ) -> list[StoredTeamMember]:
+        rows = await self.pool.fetch(
+            """
+            SELECT team_id, subject, role, created_by, created_at
+            FROM team_members
+            WHERE ($1::text IS NULL OR team_id = $1)
+              AND ($2::text IS NULL OR subject = $2)
+            ORDER BY created_at DESC
+            """,
+            team_id,
+            subject,
+        )
+        return [_team_member_from_row(row) for row in rows]
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -2157,8 +2550,49 @@ def _api_key_from_row(row: Any) -> StoredApiKey:
         role=str(row["role"]),
         created_by=str(row["created_by"]),
         created_at=str(_iso(row["created_at"])),
+        team_id=str(_row_get(row, "team_id"))
+        if _row_get(row, "team_id") is not None
+        else None,
         last_used_at=_iso(row["last_used_at"]),
         revoked_at=_iso(row["revoked_at"]),
+    )
+
+
+def _user_from_row(row: Any) -> StoredUser:
+    return StoredUser(
+        subject=str(row["subject"]),
+        display_name=str(_row_get(row, "display_name"))
+        if _row_get(row, "display_name") is not None
+        else None,
+        password_hash=str(row["password_hash"]),
+        role=str(row["role"]),
+        created_by=str(row["created_by"]),
+        created_at=str(_iso(row["created_at"])),
+        updated_at=str(_iso(row["updated_at"])),
+        disabled_at=_iso(row["disabled_at"]),
+    )
+
+
+def _team_from_row(row: Any) -> StoredTeam:
+    return StoredTeam(
+        team_id=str(row["team_id"]),
+        name=str(row["name"]),
+        description=str(_row_get(row, "description"))
+        if _row_get(row, "description") is not None
+        else None,
+        created_by=str(row["created_by"]),
+        created_at=str(_iso(row["created_at"])),
+        updated_at=str(_iso(row["updated_at"])),
+    )
+
+
+def _team_member_from_row(row: Any) -> StoredTeamMember:
+    return StoredTeamMember(
+        team_id=str(row["team_id"]),
+        subject=str(row["subject"]),
+        role=str(row["role"]),
+        created_by=str(row["created_by"]),
+        created_at=str(_iso(row["created_at"])),
     )
 
 
