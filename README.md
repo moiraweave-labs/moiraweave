@@ -48,13 +48,20 @@ Use the CLI instead. The fastest local path is:
 when there are no workloads, starts API, worker, Postgres, Redis, Qdrant, UI,
 and workload services, then registers deployment records.
 
-Local development auth uses `DEMO_USERNAME`, `DEMO_PASSWORD`, and `DEMO_ROLE`.
-Admins can create, list, rotate, and revoke hashed API keys from the Security
-screen or the `/auth/api-keys` API; the secret is returned once, while metadata
-and revocation state stay in Postgres and lifecycle changes are audited. Static
-bootstrap keys are still supported through `MOIRA_API_KEYS` as comma-separated
-`key:subject:role` entries. Roles are `viewer`, `operator`, and `admin`.
-Clients can resolve the active credential through `GET /auth/me`.
+Local development auth uses `DEMO_USERNAME`, `DEMO_PASSWORD`, and `DEMO_ROLE`
+as a bootstrap path. Admins can also create persistent users, teams, team
+memberships, and hashed API keys through `/auth/users`, `/auth/teams`, and
+`/auth/api-keys`. API key secrets are returned once; metadata, team scope,
+last-use timestamps, and revocation state stay in Postgres and lifecycle changes
+are audited. Static bootstrap keys are still supported through `MOIRA_API_KEYS`
+as comma-separated `key:subject:role` entries. Roles are `viewer`, `operator`,
+and `admin`. Clients can resolve the active credential through `GET /auth/me`.
+
+Inbound channels use the same authenticated session/run path as the UI. Channel
+connectors can call `/v1/channels/{channel}/agents/{name}/messages`; webhook
+connectors can use the alias `/v1/webhooks/{channel}/agents/{name}/messages`.
+Deployment views are environment-scoped, and `/v1/environments` summarizes the
+environments visible to the current user.
 
 ## Local development
 
