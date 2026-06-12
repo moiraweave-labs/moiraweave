@@ -69,6 +69,8 @@ async def _main() -> None:
             pending_reclaim_idle_seconds=settings.pending_reclaim_idle_seconds,
             pending_reclaim_interval_seconds=settings.pending_reclaim_interval_seconds,
             pending_reclaim_count=settings.pending_reclaim_count,
+            run_retry_attempts=settings.run_retry_attempts,
+            run_retry_backoff_seconds=settings.run_retry_backoff_seconds,
         )
     )
     logger.info("run_consumer_registered workloads_dir=%s", settings.workloads_dir)

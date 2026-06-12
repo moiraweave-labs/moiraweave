@@ -132,6 +132,101 @@ async def test_process_agent_message_records_assistant_response(
     assert artifacts[0].metadata["session_id"] == "session-1"
 
 
+async def test_process_message_retries_transient_executor_failure(
+    fake_redis: Any,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    async def flaky_send_message(
+        self: HttpAgentAdapter, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        nonlocal calls
+        del self, payload
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("runtime warming up")
+        return {"response": "ok"}
+
+    monkeypatch.setattr(HttpAgentAdapter, "send_message", flaky_send_message)
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    workload = _agent_workload()
+    await control_plane.upsert_workload(workload, "user")
+    await control_plane.create_run(
+        "run-retry",
+        "agent",
+        {"message": "hello"},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    msg = RunMessage(
+        run_id="run-retry",
+        workload_name="agent",
+        payload=json.dumps({"message": "hello"}),
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+
+    await _process_message(
+        fake_redis,
+        control_plane,
+        "1-0",
+        msg,
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        run_retry_attempts=2,
+        run_retry_backoff_seconds=0.0,
+    )
+
+    run = await control_plane.get_run("run-retry")
+    events = await control_plane.list_run_events("run-retry")
+
+    assert calls == 2
+    assert run is not None
+    assert run.status == "succeeded"
+    assert any(event.type == "run.retry" for event in events)
+    assert any(event.type == "run.retrying" for event in events)
+
+
+async def test_active_duplicate_message_is_acknowledged_without_reexecution(
+    fake_redis: Any,
+    tmp_path,
+) -> None:
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    await control_plane.create_run(
+        "run-active-duplicate",
+        "agent",
+        {},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    await _advance_run(control_plane, "run-active-duplicate", "running")
+    msg = RunMessage(
+        run_id="run-active-duplicate",
+        workload_name="agent",
+        payload="{}",
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+
+    await _process_message(
+        fake_redis,
+        control_plane,
+        "1-0",
+        msg,
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+    )
+
+    run = await control_plane.get_run("run-active-duplicate")
+    events = await control_plane.list_run_events("run-active-duplicate")
+
+    assert run is not None
+    assert run.status == "running"
+    assert events[-1].type == "run.duplicate_ignored"
+
+
 async def test_invalid_run_message_goes_to_dead_letter(
     fake_redis: Any, tmp_path
 ) -> None:

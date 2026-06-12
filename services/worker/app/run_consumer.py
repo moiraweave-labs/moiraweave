@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 RECOVERABLE_PENDING_RUN_STATUSES = {"queued", "cancel_requested"}
+PROCESSABLE_RUN_STATUSES = {"queued", "cancel_requested"}
 
 
 async def _ensure_consumer_group(redis: Redis) -> None:
@@ -164,6 +165,56 @@ async def _heartbeat_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
         except TimeoutError:
             continue
+
+
+async def _execute_with_retries(
+    workloads: dict[str, WorkloadDefinition],
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+    *,
+    emit: Any,
+    is_cancel_requested: Any,
+    run_retry_attempts: int,
+    run_retry_backoff_seconds: float,
+) -> dict[str, Any]:
+    attempts = max(run_retry_attempts, 1)
+    backoff_seconds = max(run_retry_backoff_seconds, 0.0)
+    executor = WorkloadExecutor(workloads)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            if attempt > 1:
+                await emit(
+                    "run.retrying",
+                    "Retrying run after transient executor failure",
+                    data={"attempt": attempt, "max_attempts": attempts},
+                )
+            return await executor.execute(
+                workload,
+                payload,
+                emit=emit,
+                is_cancel_requested=is_cancel_requested,
+            )
+        except RunCancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= attempts:
+                raise
+            await emit(
+                "run.retry",
+                "Run attempt failed; retry scheduled",
+                data={
+                    "attempt": attempt,
+                    "max_attempts": attempts,
+                    "error": str(exc),
+                },
+            )
+            if backoff_seconds > 0:
+                await asyncio.sleep(backoff_seconds * (2 ** (attempt - 1)))
+            if await is_cancel_requested():
+                raise RunCancelledError("Run canceled before retry") from exc
+
+    raise RuntimeError("Run retry loop exited without a result")
 
 
 async def _is_cancel_requested(
@@ -337,6 +388,8 @@ async def run_consumer(
     pending_reclaim_idle_seconds: float = 60.0,
     pending_reclaim_interval_seconds: float = 30.0,
     pending_reclaim_count: int = 10,
+    run_retry_attempts: int = 3,
+    run_retry_backoff_seconds: float = 1.0,
 ) -> None:
     """Consume generic workload runs from Redis and execute them."""
 
@@ -397,6 +450,8 @@ async def run_consumer(
                     dict(fields),
                     workloads_dir=workloads_dir,
                     heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    run_retry_attempts=run_retry_attempts,
+                    run_retry_backoff_seconds=run_retry_backoff_seconds,
                 )
 
 
@@ -408,6 +463,8 @@ async def _process_message(
     *,
     workloads_dir: str,
     heartbeat_interval_seconds: float,
+    run_retry_attempts: int = 1,
+    run_retry_backoff_seconds: float = 0.0,
 ) -> None:
     try:
         msg = RunMessage.model_validate(fields)
@@ -423,6 +480,21 @@ async def _process_message(
         await _dead_letter(redis, msg_id, fields, reason="run_not_found")
         return
     if existing_run.status in TERMINAL_RUN_STATUSES:
+        await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+        return
+    if existing_run.status not in PROCESSABLE_RUN_STATUSES:
+        logger.info(
+            "run_message_ignored_active run_id=%s status=%s msg_id=%s",
+            run_id,
+            existing_run.status,
+            msg_id,
+        )
+        await control_plane.append_run_event(
+            run_id,
+            "run.duplicate_ignored",
+            "Duplicate dispatch message ignored because run is already active",
+            data={"status": existing_run.status, "message_id": msg_id},
+        )
         await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
         return
 
@@ -532,11 +604,14 @@ async def _process_message(
             return await _is_cancel_requested(control_plane, run_id)
 
         async with asyncio.timeout(workload.spec.execution.timeoutSeconds):
-            result = await WorkloadExecutor(workloads).execute(
+            result = await _execute_with_retries(
+                workloads,
                 workload,
                 payload,
                 emit=emit,
                 is_cancel_requested=is_cancel_requested,
+                run_retry_attempts=run_retry_attempts,
+                run_retry_backoff_seconds=run_retry_backoff_seconds,
             )
         if await _is_cancel_requested(control_plane, run_id):
             await _cancel(control_plane, run_id, "Run canceled after executor returned")
