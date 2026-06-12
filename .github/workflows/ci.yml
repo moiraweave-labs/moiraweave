@@ -133,6 +133,7 @@ jobs:
       # Uncomment for cloud OIDC (AWS/GCP/Azure):
       # id-token: write
     strategy:
+      fail-fast: false
       matrix:
         service:
           - api-gateway
@@ -180,20 +181,38 @@ jobs:
           pull: true
           platforms: linux/amd64
 
+      - name: Resolve image scan reference
+        id: scan-ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_PREFIX}/${{ matrix.service }}:sha-${GITHUB_SHA::7}"
+          for attempt in {1..12}; do
+            if docker buildx imagetools inspect "${image}" >/dev/null 2>&1; then
+              echo "image=${image}" >>"${GITHUB_OUTPUT}"
+              echo "Resolved image scan reference: ${image}"
+              exit 0
+            fi
+            echo "Image ${image} is not visible yet; retrying after GHCR propagation delay (${attempt}/12)."
+            sleep 5
+          done
+          echo "::error title=GHCR image is not visible::${image} was pushed but could not be inspected after retries."
+          exit 1
+
       - name: Trivy — enforce policy (table)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.scan-ref.outputs.image }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
 
       - name: Trivy — generate SARIF for Code Scanning
-        if: always()
+        if: ${{ always() && !cancelled() && steps.scan-ref.outputs.image != '' }}
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.scan-ref.outputs.image }}
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
           severity: CRITICAL,HIGH

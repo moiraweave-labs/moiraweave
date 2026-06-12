@@ -44,3 +44,29 @@ def test_baseline_revision_runs_all_legacy_control_plane_migrations() -> None:
         5,
         6,
     ]
+
+
+def test_baseline_sql_splitter_keeps_dollar_quoted_blocks_intact() -> None:
+    statements = list(
+        baseline._split_sql_statements(
+            """
+            CREATE TABLE example (id integer);
+            DO $$
+            BEGIN
+                RAISE NOTICE 'semicolon; inside block';
+            END $$;
+            CREATE INDEX example_id_idx ON example (id);
+            """
+        )
+    )
+
+    assert len(statements) == 3
+    assert "semicolon; inside block" in statements[1]
+    assert statements[1].startswith("DO $$")
+
+
+def test_control_plane_migration_sql_is_split_into_single_driver_statements() -> None:
+    for _, sql in baseline.CONTROL_PLANE_MIGRATIONS:
+        for statement in baseline._split_sql_statements(sql):
+            assert statement
+            assert not statement.rstrip().endswith(";")
