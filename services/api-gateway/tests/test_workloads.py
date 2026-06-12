@@ -654,6 +654,13 @@ async def test_deployment_records_are_environment_scoped(
     assert dev_health.json()["status"] == "pending"
     assert prod_health.json()["status"] == "healthy"
 
+    environments = await auth_client.get("/v1/environments")
+    assert environments.status_code == 200
+    by_name = {item["name"]: item for item in environments.json()}
+    assert by_name["dev"]["deployment_count"] == 1
+    assert by_name["prod"]["deployment_count"] == 1
+    assert by_name["prod"]["workload_count"] == 1
+
 
 async def test_local_deployment_plan_describes_cli_and_compose_apply(
     auth_client: AsyncClient,
@@ -1256,6 +1263,32 @@ async def test_channel_message_creates_session_run_and_audit_record(
     assert audit.json()[0]["resource_id"] == body["session_id"]
     assert audit.json()[0]["metadata"]["channel"] == "telegram"
     assert audit.json()[0]["metadata"]["run_id"] == body["run_id"]
+
+
+async def test_webhook_message_uses_channel_contract(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
+    assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/webhooks/webhook/agents/hermes/messages",
+        json={
+            "external_user_id": "webhook-sender",
+            "message": "run diagnostics",
+            "metadata": {"source": "incident-webhook"},
+        },
+    )
+
+    assert resp.status_code == 202
+    body = resp.json()
+    run = await control_plane.get_run(body["run_id"])
+    assert run is not None
+    assert run.session_id == body["session_id"]
+    assert control_plane.channel_messages[0].channel == "webhook"
+    assert control_plane.channel_messages[0].metadata["source"] == "incident-webhook"
 
 
 async def test_duplicate_agent_messages_keep_distinct_run_links(

@@ -58,6 +58,7 @@ from app.models.workloads import (
     DeploymentPlanResponse,
     DeploymentRequest,
     DeploymentResponse,
+    EnvironmentInfo,
     PreflightAction,
     PreflightCheck,
     PreflightRequest,
@@ -2176,6 +2177,39 @@ async def list_deployments(
     return [_deployment_response(deployment) for deployment in deployments]
 
 
+@router.get("/environments", response_model=list[EnvironmentInfo])
+async def list_environments(
+    control_plane: ControlPlane,
+    current_user: CurrentUser,
+) -> list[EnvironmentInfo]:
+    deployments = await control_plane.list_deployments(current_user.subject)
+    operations = await control_plane.list_deployment_operations(
+        current_user.subject,
+        limit=500,
+        offset=0,
+    )
+    envs: dict[str, EnvironmentInfo] = {
+        name: EnvironmentInfo(name=name)
+        for name in ["local", "dev", "staging", "prod"]
+    }
+    workloads_by_env: dict[str, set[str]] = {}
+
+    for deployment in deployments:
+        info = envs.setdefault(deployment.env, EnvironmentInfo(name=deployment.env))
+        info.deployment_count += 1
+        workloads_by_env.setdefault(deployment.env, set()).add(deployment.workload_name)
+
+    for operation in operations:
+        info = envs.setdefault(operation.env, EnvironmentInfo(name=operation.env))
+        info.operation_count += 1
+        workloads_by_env.setdefault(operation.env, set()).add(operation.workload_name)
+
+    for env, workload_names in workloads_by_env.items():
+        envs[env].workload_count = len(workload_names)
+
+    return sorted(envs.values(), key=lambda item: item.name)
+
+
 @router.get("/audit-events", response_model=list[AuditEventResponse])
 async def list_audit_events(
     control_plane: ControlPlane,
@@ -2813,6 +2847,11 @@ async def post_agent_message(
 
 @router.post(
     "/channels/{channel}/agents/{name}/messages",
+    response_model=AgentMessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@router.post(
+    "/webhooks/{channel}/agents/{name}/messages",
     response_model=AgentMessageResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )

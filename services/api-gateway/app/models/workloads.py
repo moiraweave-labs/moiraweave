@@ -235,6 +235,13 @@ class DeploymentOperationResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class EnvironmentInfo(BaseModel):
+    name: str
+    deployment_count: int = 0
+    operation_count: int = 0
+    workload_count: int = 0
+
+
 class DeploymentOperationEvent(BaseModel):
     id: str
     operation_id: str
