@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from moiraweave_shared.control_plane import (
+    InMemoryControlPlaneRepository,
+    utc_now_iso,
+)
 from moiraweave_shared.workloads import (
     RunStateTransitionError,
     WorkloadDefinition,
@@ -109,3 +113,24 @@ def test_run_state_transition_policy() -> None:
 
     with pytest.raises(RunStateTransitionError):
         ensure_run_transition("succeeded", "running")
+
+
+async def test_control_plane_enforces_run_state_transition_policy() -> None:
+    control_plane = InMemoryControlPlaneRepository()
+    await control_plane.create_run(
+        "run-state-machine",
+        "agent",
+        {},
+        "user",
+        created_at=utc_now_iso(),
+    )
+
+    with pytest.raises(RunStateTransitionError):
+        await control_plane.update_run("run-state-machine", status="succeeded")
+
+    await control_plane.update_run("run-state-machine", status="starting")
+    await control_plane.update_run("run-state-machine", status="running")
+    await control_plane.update_run("run-state-machine", status="succeeded")
+
+    with pytest.raises(RunStateTransitionError):
+        await control_plane.update_run("run-state-machine", status="running")

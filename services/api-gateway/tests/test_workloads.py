@@ -53,6 +53,27 @@ async def _register(
     return resp.json()
 
 
+async def _advance_run(
+    control_plane: InMemoryControlPlaneRepository,
+    run_id: str,
+    status: str,
+    **kwargs: Any,
+) -> None:
+    paths = {
+        "starting": ["starting"],
+        "running": ["starting", "running"],
+        "cancel_requested": ["cancel_requested"],
+        "cancelling": ["cancel_requested", "cancelling"],
+        "succeeded": ["starting", "running", "succeeded"],
+        "failed": ["starting", "running", "failed"],
+        "canceled": ["cancel_requested", "canceled"],
+        "lost": ["starting", "running", "lost"],
+    }
+    for step in paths[status][:-1]:
+        await control_plane.update_run(run_id, status=step)
+    await control_plane.update_run(run_id, status=paths[status][-1], **kwargs)
+
+
 def test_deployment_probe_url_defaults_to_health_path() -> None:
     assert _deployment_probe_url("http://hermes:8000") == "http://hermes:8000/health"
     assert (
@@ -228,7 +249,7 @@ async def test_get_run_returns_result(
         "testuser",
         created_at="2026-01-01T00:00:00+00:00",
     )
-    await control_plane.update_run("run-1", status="succeeded", result={"ok": True})
+    await _advance_run(control_plane, "run-1", "succeeded", result={"ok": True})
 
     resp = await auth_client.get("/v1/runs/run-1")
     assert resp.status_code == 200
@@ -303,7 +324,7 @@ async def test_cancel_run_sets_cancel_requested(
         "testuser",
         created_at="2026-01-01T00:00:00+00:00",
     )
-    await control_plane.update_run("run-cancel", status="running")
+    await _advance_run(control_plane, "run-cancel", "running")
 
     resp = await auth_client.post("/v1/runs/run-cancel/cancel")
     assert resp.status_code == 200
@@ -325,7 +346,7 @@ async def test_events_and_artifacts_are_returned(
         "testuser",
         created_at="2026-01-01T00:00:00+00:00",
     )
-    await control_plane.update_run("run-events", status="running")
+    await _advance_run(control_plane, "run-events", "running")
     await control_plane.append_run_event(
         "run-events",
         "run.running",
@@ -1311,7 +1332,7 @@ async def test_agent_session_health_reports_latest_run(
         created_at="2026-01-01T00:00:00+00:00",
         session_id=session_id,
     )
-    await control_plane.update_run("run-session-health", status="lost")
+    await _advance_run(control_plane, "run-session-health", "lost")
 
     health = await auth_client.get(f"/v1/agents/hermes/sessions/{session_id}/health")
 

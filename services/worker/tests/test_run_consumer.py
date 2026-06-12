@@ -42,6 +42,27 @@ def _agent_workload() -> WorkloadDefinition:
     )
 
 
+async def _advance_run(
+    control_plane: InMemoryControlPlaneRepository,
+    run_id: str,
+    status: str,
+    **kwargs: Any,
+) -> None:
+    paths = {
+        "starting": ["starting"],
+        "running": ["starting", "running"],
+        "cancel_requested": ["cancel_requested"],
+        "cancelling": ["cancel_requested", "cancelling"],
+        "succeeded": ["starting", "running", "succeeded"],
+        "failed": ["starting", "running", "failed"],
+        "canceled": ["cancel_requested", "canceled"],
+        "lost": ["starting", "running", "lost"],
+    }
+    for step in paths[status][:-1]:
+        await control_plane.update_run(run_id, status=step)
+    await control_plane.update_run(run_id, status=paths[status][-1], **kwargs)
+
+
 async def test_process_agent_message_records_assistant_response(
     fake_redis: Any,
     tmp_path,
@@ -241,9 +262,10 @@ async def test_mark_stale_runs_marks_active_run_lost() -> None:
         "user",
         created_at=old_heartbeat,
     )
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-stale",
-        status="running",
+        "running",
         heartbeat_at=old_heartbeat,
         updated_at=old_heartbeat,
     )
@@ -272,9 +294,10 @@ async def test_mark_stale_runs_ignores_recent_and_terminal_runs() -> None:
         "user",
         created_at=now,
     )
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-recent",
-        status="running",
+        "running",
         heartbeat_at=now,
         updated_at=now,
     )
@@ -285,9 +308,10 @@ async def test_mark_stale_runs_ignores_recent_and_terminal_runs() -> None:
         "user",
         created_at=old_heartbeat,
     )
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-terminal",
-        status="succeeded",
+        "succeeded",
         heartbeat_at=old_heartbeat,
         updated_at=old_heartbeat,
         completed_at=old_heartbeat,
@@ -325,9 +349,10 @@ async def test_mark_stale_runs_skips_refreshed_heartbeat() -> None:
         "user",
         created_at=old_heartbeat,
     )
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-refreshed",
-        status="running",
+        "running",
         heartbeat_at=old_heartbeat,
         updated_at=old_heartbeat,
     )
@@ -413,9 +438,10 @@ async def test_reclaim_pending_runs_skips_active_heartbeating_run(
         created_at=utc_now_iso(),
     )
     now = utc_now_iso()
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-active",
-        status="running",
+        "running",
         heartbeat_at=now,
         updated_at=now,
     )
@@ -465,9 +491,10 @@ async def test_reclaim_pending_runs_acks_terminal_run(
         "user",
         created_at=completed_at,
     )
-    await control_plane.update_run(
+    await _advance_run(
+        control_plane,
         "run-terminal-pending",
-        status="succeeded",
+        "succeeded",
         updated_at=completed_at,
         completed_at=completed_at,
     )

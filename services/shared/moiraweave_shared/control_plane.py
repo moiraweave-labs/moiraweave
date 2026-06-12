@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from moiraweave_shared.workloads import WorkloadDefinition
+from moiraweave_shared.workloads import WorkloadDefinition, ensure_run_transition
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -752,6 +752,7 @@ class InMemoryControlPlaneRepository:
             return None
         data = run.model_dump()
         if status is not None:
+            ensure_run_transition(run.status, status)
             data["status"] = status
         if result is not None:
             data["result"] = result
@@ -1344,6 +1345,12 @@ class PostgresControlPlaneRepository:
         completed_at: str | None = None,
         updated_at: str | None = None,
     ) -> StoredRun | None:
+        if status is not None:
+            run = await self.get_run(run_id)
+            if run is None:
+                return None
+            ensure_run_transition(run.status, status)
+
         fields: list[str] = []
         args: list[Any] = [run_id]
 
