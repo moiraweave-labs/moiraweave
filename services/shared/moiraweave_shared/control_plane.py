@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 
 HEARTBEAT_RUN_STATUSES = {"starting", "running", "cancelling"}
+CONTROL_PLANE_ALEMBIC_BASELINE = "20260612_0001"
 
 CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
     (
@@ -1201,6 +1202,21 @@ class PostgresControlPlaneRepository:
                         """,
                         version,
                     )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS alembic_version (
+                    version_num varchar(32) NOT NULL PRIMARY KEY
+                );
+                """
+            )
+            await conn.execute(
+                """
+                INSERT INTO alembic_version (version_num)
+                SELECT $1
+                WHERE NOT EXISTS (SELECT 1 FROM alembic_version)
+                """,
+                CONTROL_PLANE_ALEMBIC_BASELINE,
+            )
 
     async def close(self) -> None:
         await self.pool.close()
@@ -1964,6 +1980,9 @@ async def connect_postgres_control_plane(dsn: str) -> PostgresControlPlaneReposi
 
     import asyncpg  # type: ignore[import-untyped]
 
+    from moiraweave_shared.alembic_runner import upgrade_control_plane
+
+    await upgrade_control_plane(dsn)
     pool = await asyncpg.create_pool(dsn)
     repo = PostgresControlPlaneRepository(pool)
     await repo.init()
