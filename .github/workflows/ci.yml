@@ -60,7 +60,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Install all dependencies (workspace root)
         run: uv sync --frozen --all-packages
@@ -288,7 +288,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Install all dependencies (workspace root)
         run: uv sync --frozen --all-packages
@@ -373,12 +373,12 @@ jobs:
           fi
 
       - name: Bump api-gateway image tag
-        uses: mikefarah/yq@v4.53.2
+        uses: mikefarah/yq@v4.53.3
         with:
           cmd: yq -i '.apiGateway.image.tag = "${{ steps.release.outputs.tag }}"' infra/helm/moiraweave/values.yaml
 
       - name: Bump worker image tag
-        uses: mikefarah/yq@v4.53.2
+        uses: mikefarah/yq@v4.53.3
         with:
           cmd: yq -i '.worker.image.tag = "${{ steps.release.outputs.tag }}"' infra/helm/moiraweave/values.yaml
 
