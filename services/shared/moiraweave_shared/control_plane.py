@@ -634,9 +634,19 @@ class ControlPlaneRepository(Protocol):
         self, operation_id: str
     ) -> StoredDeploymentOperation | None: ...
 
+    async def update_deployment_operation(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any],
+        updated_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> StoredDeploymentOperation: ...
+
     async def list_deployment_operations(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         target: str | None = None,
@@ -1093,7 +1103,7 @@ class InMemoryControlPlaneRepository:
 
     async def list_deployment_operations(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         target: str | None = None,
@@ -1106,7 +1116,7 @@ class InMemoryControlPlaneRepository:
         operations = [
             operation
             for operation in self.deployment_operations.values()
-            if operation.user == user
+            if (user is None or operation.user == user)
             and (workload_name is None or operation.workload_name == workload_name)
             and (target is None or operation.target == target)
             and (env is None or operation.env == env)
@@ -1115,6 +1125,27 @@ class InMemoryControlPlaneRepository:
         ]
         operations.sort(key=lambda item: item.created_at, reverse=True)
         return operations[offset : offset + limit]
+
+    async def update_deployment_operation(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any],
+        updated_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> StoredDeploymentOperation:
+        operation = self.deployment_operations[operation_id]
+        updated = operation.model_copy(
+            update={
+                "status": status,
+                "metadata": metadata,
+                "updated_at": updated_at or utc_now_iso(),
+                "completed_at": completed_at,
+            }
+        )
+        self.deployment_operations[operation_id] = updated
+        return updated
 
     async def append_deployment_operation_event(
         self,
@@ -1936,7 +1967,7 @@ class PostgresControlPlaneRepository:
 
     async def list_deployment_operations(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         target: str | None = None,
@@ -1952,7 +1983,7 @@ class PostgresControlPlaneRepository:
                 status, user_subject, metadata, created_at, updated_at,
                 completed_at
             FROM deployment_operations
-            WHERE user_subject = $1
+            WHERE ($1::text IS NULL OR user_subject = $1)
               AND ($2::text IS NULL OR workload_name = $2)
               AND ($3::text IS NULL OR target = $3)
               AND ($4::text IS NULL OR environment = $4)
@@ -1971,6 +2002,37 @@ class PostgresControlPlaneRepository:
             offset,
         )
         return [_deployment_operation_from_row(row) for row in rows]
+
+    async def update_deployment_operation(
+        self,
+        operation_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any],
+        updated_at: str | None = None,
+        completed_at: str | None = None,
+    ) -> StoredDeploymentOperation:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE deployment_operations
+            SET status = $2,
+                metadata = $3::jsonb,
+                updated_at = $4::timestamptz,
+                completed_at = $5::timestamptz
+            WHERE operation_id = $1::uuid
+            RETURNING operation_id::text, action, workload_name, target,
+                environment, status, user_subject, metadata, created_at, updated_at,
+                completed_at
+            """,
+            operation_id,
+            status,
+            json.dumps(metadata),
+            _pg_timestamp(updated_at or utc_now_iso()),
+            _pg_timestamp(completed_at),
+        )
+        if row is None:
+            raise KeyError(operation_id)
+        return _deployment_operation_from_row(row)
 
     async def append_deployment_operation_event(
         self,

@@ -1111,6 +1111,88 @@ async def test_deployment_operation_apply_is_blocked_without_controller(
     )
 
 
+async def test_deployment_operation_controller_lifecycle(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+
+    queued = await auth_client.post(
+        "/v1/deployment-operations",
+        json={
+            "action": "apply",
+            "workload_name": "hermes",
+            "target": "kubernetes",
+            "env": "dev",
+            "executor": "controller",
+        },
+    )
+
+    assert queued.status_code == 202
+    body = queued.json()
+    assert body["status"] == "queued"
+    assert body["completed_at"] is None
+    assert body["metadata"]["executor"] == "controller"
+    assert body["metadata"]["controller_required"] is True
+
+    listed = await auth_client.get("/v1/deployment-operations?status=queued&scope=all")
+    assert listed.status_code == 200
+    assert [item["operation_id"] for item in listed.json()] == [body["operation_id"]]
+
+    claim = await auth_client.post(
+        f"/v1/deployment-operations/{body['operation_id']}/claim",
+        json={
+            "controller_id": "moiraweave-k8s-controller/dev",
+            "metadata": {"namespace": "moiraweave-dev"},
+        },
+    )
+    assert claim.status_code == 200
+    assert claim.json()["status"] == "running"
+    assert (
+        claim.json()["metadata"]["controller"]["id"] == "moiraweave-k8s-controller/dev"
+    )
+
+    event = await auth_client.post(
+        f"/v1/deployment-operations/{body['operation_id']}/events",
+        json={
+            "type": "controller.apply",
+            "message": "Applied Helm release.",
+            "data": {"revision": "abc123"},
+        },
+    )
+    assert event.status_code == 201
+    assert event.json()["type"] == "controller.apply"
+
+    complete = await auth_client.post(
+        f"/v1/deployment-operations/{body['operation_id']}/complete",
+        json={
+            "status": "succeeded",
+            "message": "Controller applied workload.",
+            "metadata": {"revision": "abc123"},
+        },
+    )
+    assert complete.status_code == 200
+    assert complete.json()["status"] == "succeeded"
+    assert complete.json()["completed_at"] is not None
+    assert complete.json()["metadata"]["controller_result"]["revision"] == "abc123"
+
+    deployments = await auth_client.get("/v1/deployments?workload_name=hermes&env=dev")
+    assert deployments.status_code == 200
+    assert deployments.json()[0]["target"] == "kubernetes"
+    assert deployments.json()[0]["status"] == "deployed"
+    assert deployments.json()[0]["metadata"]["source"] == "deployment-controller"
+
+    events = await auth_client.get(
+        f"/v1/deployment-operations/{body['operation_id']}/events"
+    )
+    assert [item["type"] for item in events.json()] == [
+        "operation.plan",
+        "operation.queued",
+        "operation.claimed",
+        "controller.apply",
+        "operation.succeeded",
+    ]
+
+
 async def test_deployment_operation_undeploy_returns_guidance(
     auth_client: AsyncClient,
 ) -> None:

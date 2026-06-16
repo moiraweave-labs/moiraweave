@@ -52,7 +52,10 @@ from app.models.workloads import (
     ArtifactPreviewResponse,
     AuditEventResponse,
     ChannelMessageRequest,
+    DeploymentOperationClaimRequest,
+    DeploymentOperationCompleteRequest,
     DeploymentOperationEvent,
+    DeploymentOperationEventRequest,
     DeploymentOperationRequest,
     DeploymentOperationResponse,
     DeploymentPlanResponse,
@@ -800,6 +803,45 @@ def _deployment_operation_response(operation: Any) -> DeploymentOperationRespons
 
 def _deployment_operation_event_response(event: Any) -> DeploymentOperationEvent:
     return DeploymentOperationEvent(**event.model_dump())
+
+
+def _can_access_deployment_operation(operation: Any, current_user: Any) -> bool:
+    return bool(operation.user == current_user.subject or current_user.role == "admin")
+
+
+async def _sync_deployment_record_for_completed_operation(
+    operation: Any,
+    control_plane: ControlPlaneRepository,
+    current_user: Any,
+    *,
+    now: str,
+) -> None:
+    if operation.status != "succeeded" or operation.action not in {"apply", "undeploy"}:
+        return
+
+    settings = get_settings()
+    workload = await _get_workload(operation.workload_name, control_plane, settings)
+    plan = _deployment_plan_response(
+        workload, target=operation.target, env=operation.env
+    )
+    deployment_status = "deployed" if operation.action == "apply" else "stopped"
+    await control_plane.upsert_deployment(
+        str(uuid4()),
+        workload.metadata.name,
+        plan.target,
+        deployment_status,
+        operation.user,
+        env=operation.env,
+        endpoint=plan.endpoint,
+        metadata={
+            "source": "deployment-controller",
+            "operation_id": operation.operation_id,
+            "controller_subject": current_user.subject,
+            "service_name": plan.service_name,
+            "environment": operation.env,
+        },
+        now=now,
+    )
 
 
 def _deployment_service_name(workload: WorkloadDefinition) -> str:
@@ -2245,8 +2287,10 @@ async def create_deployment_operation(
     operation_id = str(uuid4())
     now = utc_now_iso()
     metadata = dict(body.metadata)
+    metadata["executor"] = body.executor
     events: list[tuple[str, str, dict[str, Any]]] = []
     operation_status = "succeeded"
+    completed_at: str | None = now
 
     try:
         workload = await _get_workload(body.workload_name, control_plane, settings)
@@ -2301,28 +2345,45 @@ async def create_deployment_operation(
                 )
             )
         elif body.action in {"apply", "undeploy"}:
-            operation_status = "failed"
             commands = _deployment_action_commands(body.action, workload, plan)
             next_actions = _deployment_operation_next_actions(body.action, plan)
             metadata["action_commands"] = commands
             metadata["next_actions"] = next_actions
-            metadata["blocked_reason"] = "api-gateway-has-no-host-executor"
-            events.append(
-                (
-                    "operation.blocked",
+            if body.executor == "controller":
+                operation_status = "queued"
+                completed_at = None
+                metadata["controller_required"] = True
+                events.append(
                     (
-                        "This action needs a CLI or deployment controller with "
-                        "Docker/Kubernetes credentials."
-                    ),
-                    {
-                        "commands": commands,
-                        "next_actions": next_actions,
-                        "reason": metadata["blocked_reason"],
-                    },
+                        "operation.queued",
+                        "Deployment operation queued for a deployment controller.",
+                        {
+                            "commands": commands,
+                            "next_actions": next_actions,
+                            "executor": body.executor,
+                        },
+                    )
                 )
-            )
+            else:
+                operation_status = "failed"
+                metadata["blocked_reason"] = "api-gateway-has-no-host-executor"
+                events.append(
+                    (
+                        "operation.blocked",
+                        (
+                            "This action needs a CLI or deployment controller with "
+                            "Docker/Kubernetes credentials."
+                        ),
+                        {
+                            "commands": commands,
+                            "next_actions": next_actions,
+                            "reason": metadata["blocked_reason"],
+                        },
+                    )
+                )
     except HTTPException as exc:
         operation_status = "failed"
+        completed_at = utc_now_iso()
         metadata["error"] = str(exc.detail)
         events.append(
             (
@@ -2342,7 +2403,7 @@ async def create_deployment_operation(
         env=body.env,
         metadata=metadata,
         now=now,
-        completed_at=utc_now_iso(),
+        completed_at=completed_at,
     )
     for event_type, message, data in events:
         await control_plane.append_deployment_operation_event(
@@ -2374,18 +2435,24 @@ async def list_deployment_operations(
     workload_name: str | None = None,
     target: str | None = None,
     env: str | None = Query(default=None, min_length=1, max_length=64),
-    status: str | None = None,
+    operation_status: str | None = Query(default=None, alias="status"),
     action: str | None = None,
+    scope: str = Query(default="mine", pattern="^(mine|all)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[DeploymentOperationResponse]:
     normalized_target = "kubernetes" if target == "k8s" else target
+    if scope == "all" and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires admin role",
+        )
     operations = await control_plane.list_deployment_operations(
-        current_user.subject,
+        None if scope == "all" else current_user.subject,
         workload_name=workload_name,
         target=normalized_target,
         env=env,
-        status=status,
+        status=operation_status,
         action=action,
         limit=limit,
         offset=offset,
@@ -2408,7 +2475,7 @@ async def get_deployment_operation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if operation.user != current_user.subject:
+    if not _can_access_deployment_operation(operation, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return _deployment_operation_response(operation)
 
@@ -2428,10 +2495,172 @@ async def list_deployment_operation_events(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if operation.user != current_user.subject:
+    if not _can_access_deployment_operation(operation, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     events = await control_plane.list_deployment_operation_events(operation_id)
     return [_deployment_operation_event_response(event) for event in events]
+
+
+@router.post(
+    "/deployment-operations/{operation_id}/claim",
+    response_model=DeploymentOperationResponse,
+)
+async def claim_deployment_operation(
+    operation_id: str,
+    body: DeploymentOperationClaimRequest,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeploymentOperationResponse:
+    operation = await control_plane.get_deployment_operation(operation_id)
+    if operation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deployment operation not found",
+        )
+    if not _can_access_deployment_operation(operation, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if operation.status != "queued":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Deployment operation is {operation.status}, not queued",
+        )
+
+    now = utc_now_iso()
+    metadata = {
+        **operation.metadata,
+        "controller": {
+            "id": body.controller_id,
+            "claimed_by": current_user.subject,
+            "claimed_at": now,
+            **body.metadata,
+        },
+    }
+    updated = await control_plane.update_deployment_operation(
+        operation_id,
+        status="running",
+        metadata=metadata,
+        updated_at=now,
+    )
+    await control_plane.append_deployment_operation_event(
+        operation_id,
+        "operation.claimed",
+        "Deployment operation claimed by controller.",
+        data={"controller_id": body.controller_id, "claimed_by": current_user.subject},
+        timestamp=now,
+    )
+    await _audit(
+        control_plane,
+        current_user,
+        "deployment_operation.claim",
+        "deployment_operation",
+        operation_id,
+        metadata={
+            "workload_name": operation.workload_name,
+            "target": operation.target,
+            "env": operation.env,
+            "controller_id": body.controller_id,
+        },
+    )
+    return _deployment_operation_response(updated)
+
+
+@router.post(
+    "/deployment-operations/{operation_id}/events",
+    response_model=DeploymentOperationEvent,
+    status_code=status.HTTP_201_CREATED,
+)
+async def append_deployment_operation_event(
+    operation_id: str,
+    body: DeploymentOperationEventRequest,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeploymentOperationEvent:
+    operation = await control_plane.get_deployment_operation(operation_id)
+    if operation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deployment operation not found",
+        )
+    if not _can_access_deployment_operation(operation, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    event = await control_plane.append_deployment_operation_event(
+        operation_id,
+        body.type,
+        body.message,
+        data=body.data,
+    )
+    return _deployment_operation_event_response(event)
+
+
+@router.post(
+    "/deployment-operations/{operation_id}/complete",
+    response_model=DeploymentOperationResponse,
+)
+async def complete_deployment_operation(
+    operation_id: str,
+    body: DeploymentOperationCompleteRequest,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeploymentOperationResponse:
+    operation = await control_plane.get_deployment_operation(operation_id)
+    if operation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deployment operation not found",
+        )
+    if not _can_access_deployment_operation(operation, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if operation.status in {"succeeded", "failed", "canceled"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Deployment operation is already {operation.status}",
+        )
+
+    now = utc_now_iso()
+    metadata = {
+        **operation.metadata,
+        "controller_result": {
+            "completed_by": current_user.subject,
+            "completed_at": now,
+            **body.metadata,
+        },
+    }
+    if body.message:
+        metadata["controller_result"]["message"] = body.message
+    updated = await control_plane.update_deployment_operation(
+        operation_id,
+        status=body.status,
+        metadata=metadata,
+        updated_at=now,
+        completed_at=now,
+    )
+    await control_plane.append_deployment_operation_event(
+        operation_id,
+        f"operation.{body.status}",
+        body.message or f"Deployment operation {body.status}.",
+        data=body.metadata,
+        timestamp=now,
+    )
+    await _sync_deployment_record_for_completed_operation(
+        updated,
+        control_plane,
+        current_user,
+        now=now,
+    )
+    await _audit(
+        control_plane,
+        current_user,
+        "deployment_operation.complete",
+        "deployment_operation",
+        operation_id,
+        metadata={
+            "workload_name": operation.workload_name,
+            "target": operation.target,
+            "env": operation.env,
+            "status": body.status,
+        },
+    )
+    return _deployment_operation_response(updated)
 
 
 @router.get("/workloads/{name}/deployments", response_model=list[DeploymentResponse])

@@ -218,6 +218,7 @@ class DeploymentOperationRequest(BaseModel):
     workload_name: str
     target: str = Field(default="local", pattern="^(local|kubernetes|k8s|external)$")
     env: str = Field(default="dev", min_length=1, max_length=64)
+    executor: str = Field(default="api", pattern="^(api|controller|manual)$")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -249,6 +250,23 @@ class DeploymentOperationEvent(BaseModel):
     type: str
     message: str
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentOperationClaimRequest(BaseModel):
+    controller_id: str = Field(min_length=1, max_length=128)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentOperationEventRequest(BaseModel):
+    type: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=2000)
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentOperationCompleteRequest(BaseModel):
+    status: str = Field(pattern="^(succeeded|failed|canceled)$")
+    message: str | None = Field(default=None, max_length=2000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditEventResponse(BaseModel):
