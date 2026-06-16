@@ -219,6 +219,45 @@ ui:
       cpu: 250m
       memory: 256Mi
 # ---------------------------------------------------------------------------
+# Optional Kubernetes deployment controller.
+#
+# The browser never receives kubeconfig. When enabled, this pod watches queued
+# deployment operations in the API and executes Helm/kubectl from inside the
+# cluster with namespace-scoped RBAC.
+# ---------------------------------------------------------------------------
+deploymentController:
+  enabled: false
+  image:
+    repository: ghcr.io/moiraweave-labs/moiraweave-cli
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  apiUrl: "" # defaults to the in-cluster api-gateway Service
+  target: kubernetes
+  env: dev
+  releaseName: moiraweave
+  chartRef: oci://ghcr.io/moiraweave-labs/charts/moiraweave
+  namespace: "" # defaults to .Release.Namespace
+  controllerId: "" # defaults to <release>-deployment-controller
+  limit: 5
+  pollIntervalSeconds: 5
+  auth:
+    existingSecret: moiraweave-controller-token
+    tokenKey: MOIRA_TOKEN
+  serviceAccount:
+    create: true
+    name: ""
+  rbac:
+    create: true
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+# ---------------------------------------------------------------------------
 # ServiceAccount
 # ---------------------------------------------------------------------------
 serviceAccount:

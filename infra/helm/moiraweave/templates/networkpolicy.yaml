@@ -221,4 +221,43 @@ spec:
         - protocol: TCP
           port: 53
 {{- end }}
+{{- if .Values.deploymentController.enabled }}
+---
+# 6. Deployment Controller — outbound only to API, DNS, Kubernetes API, and OCI registries.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "moiraweave.fullname" . }}-deployment-controller
+  labels:
+    {{- include "moiraweave.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "moiraweave.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: deployment-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "moiraweave.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+{{- end }}
 {{- end }}

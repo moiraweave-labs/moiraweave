@@ -82,6 +82,24 @@ Fully qualified name for the UI component.
 {{- end }}
 
 {{/*
+Fully qualified name for the deployment controller component.
+*/}}
+{{- define "moiraweave.deploymentController.fullname" -}}
+{{- printf "%s-deployment-controller" (include "moiraweave.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Service account name for the deployment controller.
+*/}}
+{{- define "moiraweave.deploymentController.serviceAccountName" -}}
+{{- if .Values.deploymentController.serviceAccount.create }}
+{{- default (include "moiraweave.deploymentController.fullname" .) .Values.deploymentController.serviceAccount.name }}
+{{- else }}
+{{- default (include "moiraweave.serviceAccountName" .) .Values.deploymentController.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Fully qualified name for one workload.
 */}}
 {{- define "moiraweave.workload.fullname" -}}

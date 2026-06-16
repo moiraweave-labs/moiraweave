@@ -109,6 +109,11 @@ jobs:
             >/tmp/moiraweave-workloads.yaml
           grep -q "name: hermes" /tmp/moiraweave-workloads.yaml
           grep -q "name: openclaw" /tmp/moiraweave-workloads.yaml
+          helm template moiraweave infra/helm/moiraweave \
+            -f tests/helm/values-deployment-controller.yaml \
+            >/tmp/moiraweave-deployment-controller.yaml
+          grep -q "name: moiraweave-deployment-controller" /tmp/moiraweave-deployment-controller.yaml
+          grep -q "app.kubernetes.io/component: deployment-controller" /tmp/moiraweave-deployment-controller.yaml
 
       - name: YAML lint — infra/k8s
         run: >
@@ -268,7 +273,74 @@ jobs:
           exit "${failed}"
 
   # ---------------------------------------------------------------------------
-  # Job 4 — E2E tests (docker-compose stack + pytest)
+  # Job 4 — Publish Helm chart to GHCR OCI registry
+  # ---------------------------------------------------------------------------
+  helm-chart-publish:
+    name: Publish Helm chart
+    needs: lint-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        shell: bash
+        run: curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Build chart dependencies
+        shell: bash
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant-helm https://qdrant.github.io/qdrant-helm
+          helm dependency build infra/helm/moiraweave
+
+      - name: Log in to GHCR Helm registry
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package and push chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          chart_ref="oci://ghcr.io/moiraweave-labs/charts/moiraweave"
+          if helm show chart "${chart_ref}" --version "${version}" >/dev/null 2>&1; then
+            echo "Chart ${chart_ref}:${version} already exists; skipping push."
+            exit 0
+          fi
+          helm package infra/helm/moiraweave \
+            --destination /tmp/moiraweave-chart \
+            --version "${version}" \
+            --app-version "sha-${GITHUB_SHA::7}"
+          helm push "/tmp/moiraweave-chart/moiraweave-${version}.tgz" \
+            oci://ghcr.io/moiraweave-labs/charts
+
+      - name: Verify anonymous chart pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm registry logout ghcr.io >/dev/null 2>&1 || true
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          chart_ref="oci://ghcr.io/moiraweave-labs/charts/moiraweave"
+          settings_url="https://github.com/orgs/moiraweave-labs/packages/container/package/charts%2Fmoiraweave/settings"
+          for attempt in {1..12}; do
+            if helm pull "${chart_ref}" --version "${version}" --destination /tmp >/dev/null 2>&1; then
+              echo "${chart_ref}:${version} is pullable without authentication."
+              exit 0
+            fi
+            echo "Anonymous chart pull failed on attempt ${attempt}/12; retrying."
+            sleep 10
+          done
+          echo "::error title=GHCR Helm chart is not public::${chart_ref}:${version} was pushed, but it is not pullable without authentication. Set package visibility to public: ${settings_url}"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Job 5 — E2E tests (docker-compose stack + pytest)
   # ---------------------------------------------------------------------------
   e2e:
     name: E2E tests

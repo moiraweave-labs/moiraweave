@@ -40,3 +40,79 @@ subjects:
     name: {{ include "moiraweave.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- if and .Values.deploymentController.enabled .Values.deploymentController.rbac.create }}
+---
+# ---------------------------------------------------------------------------
+# RBAC — namespace-scoped permissions for the optional deployment controller.
+#
+# The controller runs Helm/kubectl for queued Kubernetes deployment operations.
+# Helm stores release state in Secrets and may reconcile namespaced objects from
+# this chart, so this Role is intentionally broader than api/worker RBAC but
+# remains namespace-scoped.
+# ---------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "moiraweave.deploymentController.fullname" . }}
+  labels:
+    {{- include "moiraweave.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-controller
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - endpoints
+      - events
+      - persistentvolumeclaims
+      - pods
+      - pods/log
+      - secrets
+      - serviceaccounts
+      - services
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["keda.sh"]
+    resources:
+      - scaledobjects
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "moiraweave.deploymentController.fullname" . }}
+  labels:
+    {{- include "moiraweave.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "moiraweave.deploymentController.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "moiraweave.deploymentController.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -112,3 +112,55 @@ def test_workload_template_renders_runtime_probes() -> None:
     assert "toYaml $workload.livenessProbe" in template
     assert "if $workload.readinessProbe" in template
     assert "toYaml $workload.readinessProbe" in template
+
+
+def test_deployment_controller_values_define_disabled_secure_default() -> None:
+    values = _read_yaml("infra/helm/moiraweave/values.yaml")
+
+    controller = values["deploymentController"]
+    assert controller["enabled"] is False
+    assert controller["image"]["repository"] == (
+        "ghcr.io/moiraweave-labs/moiraweave-cli"
+    )
+    assert controller["chartRef"] == "oci://ghcr.io/moiraweave-labs/charts/moiraweave"
+    assert controller["auth"]["existingSecret"] == "moiraweave-controller-token"
+    assert controller["auth"]["tokenKey"] == "MOIRA_TOKEN"
+
+
+def test_deployment_controller_template_runs_cli_controller() -> None:
+    template = _read_text(
+        "infra/helm/moiraweave/templates/deployment-controller/deployment.yaml"
+    )
+
+    assert "if .Values.deploymentController.enabled" in template
+    assert "app.kubernetes.io/component: deployment-controller" in template
+    assert "ghcr.io/moiraweave-labs/moiraweave-cli" not in template
+    assert "- controller" in template
+    assert "- --chart-ref" in template
+    assert "- --repo-root" in template
+    assert "- /workspace" in template
+    assert "secretKeyRef:" in template
+    assert "MOIRA_TOKEN" in template
+
+
+def test_deployment_controller_rbac_is_separate_and_namespace_scoped() -> None:
+    rbac = _read_text("infra/helm/moiraweave/templates/rbac.yaml")
+
+    assert "moiraweave.deploymentController.serviceAccountName" in rbac
+    assert "kind: Role" in rbac
+    assert "kind: ClusterRole" not in rbac
+    assert "resources:" in rbac
+    assert "- deployments" in rbac
+    assert "- services" in rbac
+    assert "- persistentvolumeclaims" in rbac
+    assert "- rolebindings" in rbac
+
+
+def test_deployment_controller_network_policy_allows_api_and_kubernetes_api() -> None:
+    network_policy = _read_text("infra/helm/moiraweave/templates/networkpolicy.yaml")
+
+    assert "deployment-controller" in network_policy
+    assert "app.kubernetes.io/component: api-gateway" in network_policy
+    assert "port: 8000" in network_policy
+    assert "port: 443" in network_policy
+    assert "port: 6443" in network_policy
