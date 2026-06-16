@@ -1,0 +1,95 @@
+apiVersion: moiraweave.io/v1alpha1
+kind: Workload
+metadata:
+  name: hermes
+  labels:
+    moiraweave.io/template: hermes
+    moiraweave.io/runtime: hermes-agent
+  annotations:
+    moiraweave.io/tool-ownership: runtime
+spec:
+  type: agent-service
+  image: ghcr.io/nousresearch/hermes-agent:latest
+  deployment:
+    mode: managed
+    targets:
+      - local
+      - kubernetes
+    serviceName: hermes
+    localNetwork: moiraweave-net
+    replicas: 1
+  execution:
+    mode: session
+    timeoutSeconds: 172800
+  ports:
+    - name: http
+      port: 8642
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  env:
+    API_SERVER_ENABLED: "true"
+    API_SERVER_HOST: "0.0.0.0"
+    API_SERVER_PORT: "8642"
+  secrets:
+    - OPENAI_API_KEY
+  persistence:
+    enabled: true
+    mountPath: /workspace
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  agent:
+    adapter: hermes
+    toolOwnership: runtime
+    requiredSecrets:
+      - OPENAI_API_KEY
+    authTokenEnv: HERMES_API_SERVER_KEY
+    model: hermes-agent
+    workspaceMount: /workspace
+    exposedChannels:
+      - ui
+      - api
+    externalOwnedChannels:
+      - telegram
+    capabilities:
+      - chat
+      - tools
+      - long-running
+    runtimeRequirements:
+      filesystem:
+        persistentWorkspace: true
+        workspaceMount: /workspace
+      network:
+        egress: enabled
+      webSearch:
+        enabled: true
+      browser:
+        mode: runtime-managed
+      terminal:
+        mode: runtime-managed
+        approval: runtime
+      mcp:
+        enabled: true
+      messaging:
+        enabled: true
+    dispatchTimeoutSeconds: 10
+    pollIntervalSeconds: 2

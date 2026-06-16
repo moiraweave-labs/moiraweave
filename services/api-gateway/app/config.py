@@ -36,7 +36,8 @@ class Settings(BaseSettings):
         "postgresql://moiraweave:moiraweave-dev@postgres:5432/moiraweave"
     )
 
-    # Qdrant — vector store for RAG/search workloads
+    # Qdrant — vector store for RAG/search workloads. Set EMBEDDING_MODEL=""
+    # to disable semantic search in tests or minimal control-plane deployments.
     qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
@@ -47,6 +48,10 @@ class Settings(BaseSettings):
     # Replace with a database-backed user store for production.
     demo_username: str = "admin"
     demo_password: SecretStr = SecretStr("demo-password")
+    demo_role: Literal["admin", "operator", "viewer"] = "admin"
+    # Comma-separated API keys in the form key:subject:role.
+    # Example: MOIRA_API_KEYS=local-dev:cli-admin:admin,ci-token:ci:operator
+    moira_api_keys: str = ""
 
     # OpenTelemetry
     otel_enabled: bool = True

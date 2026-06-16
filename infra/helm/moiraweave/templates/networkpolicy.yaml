@@ -21,8 +21,9 @@ spec:
     - Egress
 
 ---
-# 2. API Gateway — accepts inbound HTTP from ingress-nginx only.
-#    Allows outbound to Redis, Postgres, Qdrant, and DNS.
+# 2. API Gateway — accepts user HTTP from ingress-nginx and Prometheus scrapes
+#    from the monitoring namespace.
+#    Allows outbound to Redis, Postgres, Qdrant, workload health endpoints, and DNS.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -42,6 +43,14 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    # Prometheus metrics scrape
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
           port: 8000
@@ -70,6 +79,12 @@ spec:
       ports:
         - protocol: TCP
           port: 6333
+    # Workload health probes and deployment checks
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "moiraweave.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: workload
     # DNS resolution
     - ports:
         - protocol: UDP
@@ -142,7 +157,7 @@ spec:
           port: 53
 
 ---
-# 4. Workload pods — accept inbound from worker only.
+# 4. Workload pods — accept inbound from worker and api-gateway only.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -162,6 +177,10 @@ spec:
             matchLabels:
               {{- include "moiraweave.selectorLabels" . | nindent 14 }}
               app.kubernetes.io/component: worker
+        - podSelector:
+            matchLabels:
+              {{- include "moiraweave.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api-gateway
 {{- if .Values.ui.enabled }}
 ---
 # 5. UI — accepts HTTP from ingress-nginx and proxies API requests.
@@ -201,5 +220,44 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- end }}
+{{- if .Values.deploymentController.enabled }}
+---
+# 6. Deployment Controller — outbound only to API, DNS, Kubernetes API, and OCI registries.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "moiraweave.fullname" . }}-deployment-controller
+  labels:
+    {{- include "moiraweave.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "moiraweave.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: deployment-controller
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "moiraweave.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api-gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
 {{- end }}
 {{- end }}

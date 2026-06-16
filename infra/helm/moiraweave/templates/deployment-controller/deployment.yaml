@@ -1,0 +1,71 @@
+{{- if .Values.deploymentController.enabled }}
+{{- $apiUrl := default (printf "http://%s" (include "moiraweave.apiGateway.fullname" .)) .Values.deploymentController.apiUrl -}}
+{{- $namespace := default .Release.Namespace .Values.deploymentController.namespace -}}
+{{- $controllerId := default (include "moiraweave.deploymentController.fullname" .) .Values.deploymentController.controllerId -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "moiraweave.deploymentController.fullname" . }}
+  labels:
+    {{- include "moiraweave.labels" . | nindent 4 }}
+    app.kubernetes.io/component: deployment-controller
+spec:
+  replicas: {{ .Values.deploymentController.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "moiraweave.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: deployment-controller
+  template:
+    metadata:
+      labels:
+        {{- include "moiraweave.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: deployment-controller
+    spec:
+      serviceAccountName: {{ include "moiraweave.deploymentController.serviceAccountName" . }}
+      containers:
+        - name: deployment-controller
+          image: "{{ .Values.deploymentController.image.repository }}:{{ .Values.deploymentController.image.tag }}"
+          imagePullPolicy: {{ .Values.deploymentController.image.pullPolicy }}
+          args:
+            - deploy
+            - controller
+            - run
+            - --api-url
+            - {{ $apiUrl | quote }}
+            - --target
+            - {{ .Values.deploymentController.target | quote }}
+            - --env
+            - {{ .Values.deploymentController.env | quote }}
+            - --controller-id
+            - {{ $controllerId | quote }}
+            - --limit
+            - {{ .Values.deploymentController.limit | quote }}
+            - --poll-interval
+            - {{ .Values.deploymentController.pollIntervalSeconds | quote }}
+            - --chart-ref
+            - {{ .Values.deploymentController.chartRef | quote }}
+            - --namespace
+            - {{ $namespace | quote }}
+            - --release
+            - {{ .Values.deploymentController.releaseName | quote }}
+            - --repo-root
+            - /workspace
+            - --watch
+          env:
+            - name: MOIRA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.deploymentController.auth.existingSecret }}
+                  key: {{ .Values.deploymentController.auth.tokenKey }}
+            {{- with .Values.deploymentController.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.deploymentController.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+{{- end }}

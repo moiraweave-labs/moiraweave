@@ -34,6 +34,8 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
+RECOVERABLE_PENDING_RUN_STATUSES = {"queued", "cancel_requested"}
+PROCESSABLE_RUN_STATUSES = {"queued", "cancel_requested"}
 
 
 async def _ensure_consumer_group(redis: Redis) -> None:
@@ -50,7 +52,11 @@ async def _ensure_consumer_group(redis: Redis) -> None:
 
 
 async def _record_artifacts(
-    control_plane: ControlPlaneRepository, run_id: str, result: dict[str, Any]
+    control_plane: ControlPlaneRepository,
+    run_id: str,
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+    result: dict[str, Any],
 ) -> None:
     artifacts = result.get("artifacts")
     if not isinstance(artifacts, list):
@@ -59,7 +65,7 @@ async def _record_artifacts(
         if isinstance(artifact, dict):
             await control_plane.record_artifact(
                 run_id,
-                artifact,
+                _artifact_with_context(artifact, workload, payload),
                 fallback_index=index,
             )
 
@@ -86,6 +92,20 @@ async def _record_agent_response(
         context={"run_id": run_id, "adapter": result.get("adapter", "unknown")},
         created_at=utc_now_iso(),
     )
+
+
+def _artifact_with_context(
+    artifact: dict[str, Any],
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = artifact.get("metadata")
+    enriched_metadata = metadata.copy() if isinstance(metadata, dict) else {}
+    enriched_metadata.setdefault("workload_name", workload.metadata.name)
+    session_id = payload.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        enriched_metadata.setdefault("session_id", session_id)
+    return {**artifact, "metadata": enriched_metadata}
 
 
 async def _dead_letter(
@@ -147,6 +167,56 @@ async def _heartbeat_loop(
             continue
 
 
+async def _execute_with_retries(
+    workloads: dict[str, WorkloadDefinition],
+    workload: WorkloadDefinition,
+    payload: dict[str, Any],
+    *,
+    emit: Any,
+    is_cancel_requested: Any,
+    run_retry_attempts: int,
+    run_retry_backoff_seconds: float,
+) -> dict[str, Any]:
+    attempts = max(run_retry_attempts, 1)
+    backoff_seconds = max(run_retry_backoff_seconds, 0.0)
+    executor = WorkloadExecutor(workloads)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            if attempt > 1:
+                await emit(
+                    "run.retrying",
+                    "Retrying run after transient executor failure",
+                    data={"attempt": attempt, "max_attempts": attempts},
+                )
+            return await executor.execute(
+                workload,
+                payload,
+                emit=emit,
+                is_cancel_requested=is_cancel_requested,
+            )
+        except RunCancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= attempts:
+                raise
+            await emit(
+                "run.retry",
+                "Run attempt failed; retry scheduled",
+                data={
+                    "attempt": attempt,
+                    "max_attempts": attempts,
+                    "error": str(exc),
+                },
+            )
+            if backoff_seconds > 0:
+                await asyncio.sleep(backoff_seconds * (2 ** (attempt - 1)))
+            if await is_cancel_requested():
+                raise RunCancelledError("Run canceled before retry") from exc
+
+    raise RuntimeError("Run retry loop exited without a result")
+
+
 async def _is_cancel_requested(
     control_plane: ControlPlaneRepository, run_id: str
 ) -> bool:
@@ -167,24 +237,142 @@ async def mark_stale_runs(
     stale_runs = await control_plane.find_stale_runs(before=threshold.isoformat())
     now = datetime.now(UTC)
     for run in stale_runs:
-        heartbeat_raw = run.heartbeat_at or run.updated_at or run.created_at
+        latest = await control_plane.get_run(run.run_id)
+        if latest is None or latest.status in TERMINAL_RUN_STATUSES:
+            continue
+        heartbeat_raw = latest.heartbeat_at or latest.updated_at or latest.created_at
         with contextlib.suppress(ValueError):
-            heartbeat = datetime.fromisoformat(heartbeat_raw)
+            heartbeat = datetime.fromisoformat(heartbeat_raw.replace("Z", "+00:00"))
+            if heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=UTC)
+            if heartbeat >= threshold:
+                continue
             age = int((now - heartbeat).total_seconds())
             completed_at = utc_now_iso()
             await control_plane.update_run(
-                run.run_id,
+                latest.run_id,
                 status="lost",
                 error=f"Heartbeat stale for {age}s",
                 updated_at=completed_at,
                 completed_at=completed_at,
             )
             await control_plane.append_run_event(
-                run.run_id,
+                latest.run_id,
                 "run.lost",
                 "Run marked lost after stale heartbeat",
                 data={"age_seconds": age},
             )
+
+
+async def reclaim_pending_runs(
+    redis: Redis,
+    control_plane: ControlPlaneRepository,
+    consumer_id: str,
+    *,
+    workloads_dir: str,
+    heartbeat_interval_seconds: float,
+    min_idle_seconds: float,
+    count: int,
+) -> int:
+    """Recover abandoned pending Redis Stream messages.
+
+    Redis pending idle time alone is not enough for long-running agent runs:
+    a healthy worker can hold the message pending for hours while it heartbeats
+    in Postgres. Reclaim only queued/cancel-requested runs, and clean up
+    terminal runs, so active heartbeating work is not duplicated.
+    """
+
+    if min_idle_seconds <= 0 or count <= 0:
+        return 0
+
+    min_idle_ms = max(int(min_idle_seconds * 1000), 1)
+    try:
+        pending: Any = await redis.xpending_range(
+            RUN_STREAM,
+            CONSUMER_GROUP,
+            "-",
+            "+",
+            count,
+            idle=min_idle_ms,
+        )
+    except ResponseError as exc:
+        logger.warning("run_pending_reclaim_read_failed error=%s", exc)
+        return 0
+
+    reclaimed = 0
+    for entry in pending:
+        msg_id = _pending_message_id(entry)
+        if msg_id is None:
+            continue
+        messages: Any = await redis.xrange(RUN_STREAM, min=msg_id, max=msg_id, count=1)
+        if not messages:
+            await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+            reclaimed += 1
+            continue
+        _message_id, fields = messages[0]
+        fields = dict(fields)
+
+        try:
+            msg = RunMessage.model_validate(fields)
+        except ValidationError:
+            await _dead_letter(redis, msg_id, fields, reason="invalid_run_message")
+            reclaimed += 1
+            continue
+
+        run = await control_plane.get_run(msg.run_id)
+        if run is None:
+            await _dead_letter(redis, msg_id, fields, reason="run_not_found")
+            reclaimed += 1
+            continue
+        if run.status in TERMINAL_RUN_STATUSES:
+            await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+            reclaimed += 1
+            continue
+        if run.status not in RECOVERABLE_PENDING_RUN_STATUSES:
+            logger.debug(
+                "run_pending_reclaim_skip_active run_id=%s status=%s",
+                msg.run_id,
+                run.status,
+            )
+            continue
+
+        claimed: Any = await redis.xclaim(
+            RUN_STREAM,
+            CONSUMER_GROUP,
+            consumer_id,
+            min_idle_ms,
+            [msg_id],
+        )
+        if not claimed:
+            continue
+        claimed_id, claimed_fields = claimed[0]
+        logger.info(
+            "run_pending_reclaimed run_id=%s msg_id=%s consumer=%s",
+            msg.run_id,
+            claimed_id,
+            consumer_id,
+        )
+        await _process_message(
+            redis,
+            control_plane,
+            claimed_id,
+            dict(claimed_fields),
+            workloads_dir=workloads_dir,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+        )
+        reclaimed += 1
+
+    return reclaimed
+
+
+def _pending_message_id(entry: Any) -> str | None:
+    if isinstance(entry, dict):
+        value = entry.get("message_id")
+    elif isinstance(entry, (list, tuple)) and entry:
+        value = entry[0]
+    else:
+        value = None
+    return str(value) if value is not None else None
 
 
 async def run_consumer(
@@ -197,12 +385,18 @@ async def run_consumer(
     heartbeat_interval_seconds: float,
     stale_run_seconds: float,
     stale_check_interval_seconds: float,
+    pending_reclaim_idle_seconds: float = 60.0,
+    pending_reclaim_interval_seconds: float = 30.0,
+    pending_reclaim_count: int = 10,
+    run_retry_attempts: int = 3,
+    run_retry_backoff_seconds: float = 1.0,
 ) -> None:
     """Consume generic workload runs from Redis and execute them."""
 
     await _ensure_consumer_group(redis)
     logger.info("run_consumer_start consumer=%s stream=%s", consumer_id, RUN_STREAM)
     next_stale_check = 0.0
+    next_reclaim_check = 0.0
 
     while not shutdown_event.is_set():
         now_loop = asyncio.get_running_loop().time()
@@ -212,6 +406,24 @@ async def run_consumer(
                 stale_after_seconds=stale_run_seconds,
             )
             next_stale_check = now_loop + stale_check_interval_seconds
+
+        if now_loop >= next_reclaim_check:
+            reclaimed = await reclaim_pending_runs(
+                redis,
+                control_plane,
+                consumer_id,
+                workloads_dir=workloads_dir,
+                heartbeat_interval_seconds=heartbeat_interval_seconds,
+                min_idle_seconds=pending_reclaim_idle_seconds,
+                count=pending_reclaim_count,
+            )
+            if reclaimed:
+                logger.info(
+                    "run_pending_reclaim_complete consumer=%s count=%d",
+                    consumer_id,
+                    reclaimed,
+                )
+            next_reclaim_check = now_loop + pending_reclaim_interval_seconds
 
         try:
             entries: Any = await redis.xreadgroup(
@@ -238,6 +450,8 @@ async def run_consumer(
                     dict(fields),
                     workloads_dir=workloads_dir,
                     heartbeat_interval_seconds=heartbeat_interval_seconds,
+                    run_retry_attempts=run_retry_attempts,
+                    run_retry_backoff_seconds=run_retry_backoff_seconds,
                 )
 
 
@@ -249,6 +463,8 @@ async def _process_message(
     *,
     workloads_dir: str,
     heartbeat_interval_seconds: float,
+    run_retry_attempts: int = 1,
+    run_retry_backoff_seconds: float = 0.0,
 ) -> None:
     try:
         msg = RunMessage.model_validate(fields)
@@ -264,6 +480,21 @@ async def _process_message(
         await _dead_letter(redis, msg_id, fields, reason="run_not_found")
         return
     if existing_run.status in TERMINAL_RUN_STATUSES:
+        await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+        return
+    if existing_run.status not in PROCESSABLE_RUN_STATUSES:
+        logger.info(
+            "run_message_ignored_active run_id=%s status=%s msg_id=%s",
+            run_id,
+            existing_run.status,
+            msg_id,
+        )
+        await control_plane.append_run_event(
+            run_id,
+            "run.duplicate_ignored",
+            "Duplicate dispatch message ignored because run is already active",
+            data={"status": existing_run.status, "message_id": msg_id},
+        )
         await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
         return
 
@@ -373,16 +604,19 @@ async def _process_message(
             return await _is_cancel_requested(control_plane, run_id)
 
         async with asyncio.timeout(workload.spec.execution.timeoutSeconds):
-            result = await WorkloadExecutor(workloads).execute(
+            result = await _execute_with_retries(
+                workloads,
                 workload,
                 payload,
                 emit=emit,
                 is_cancel_requested=is_cancel_requested,
+                run_retry_attempts=run_retry_attempts,
+                run_retry_backoff_seconds=run_retry_backoff_seconds,
             )
         if await _is_cancel_requested(control_plane, run_id):
             await _cancel(control_plane, run_id, "Run canceled after executor returned")
         else:
-            await _record_artifacts(control_plane, run_id, result)
+            await _record_artifacts(control_plane, run_id, workload, payload, result)
             await _record_agent_response(
                 control_plane, workload, payload, result, run_id
             )

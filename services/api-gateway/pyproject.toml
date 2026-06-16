@@ -19,7 +19,7 @@ dependencies = [
     # Qdrant vector store (RAG/search workloads)
     "qdrant-client[fastembed]>=1.12",
     # Prometheus metrics
-    "prometheus-fastapi-instrumentator>=7.0",
+    "prometheus-client>=0.21",
     # OpenTelemetry
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",

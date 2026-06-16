@@ -1,6 +1,6 @@
 # .github/workflows/ci.yml
 #
-# CI/CD pipeline for MoiraWeave MLOps.
+# CI/CD for the MoiraWeave AI workload and agent operations platform.
 #
 # Jobs:
 #   1. lint-test   — ruff + mypy + pytest (all branches & PRs)
@@ -16,6 +16,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -36,8 +37,9 @@ permissions:
   contents: read
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ghcr.io/moiraweave-labs/moiraweave-core
+  IMAGE_PREFIX: ghcr.io/moiraweave-labs/moiraweave
   PYTHON_VERSION: "3.13"
 
 # ---------------------------------------------------------------------------
@@ -50,15 +52,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Install all dependencies (workspace root)
         run: uv sync --frozen --all-packages
@@ -67,19 +69,19 @@ jobs:
         shell: bash
         run: |
           uv run pre-commit run ruff --files \
-            $(find services/api-gateway services/worker -name "*.py" -type f)
+            conftest.py $(find services/api-gateway services/worker -name "*.py" -type f)
 
       - name: Pre-commit Ruff format
         shell: bash
         run: |
           uv run pre-commit run ruff-format --files \
-            $(find services/api-gateway services/worker -name "*.py" -type f)
+            conftest.py $(find services/api-gateway services/worker -name "*.py" -type f)
 
       - name: Ruff lint
-        run: uv run ruff check services/api-gateway services/worker
+        run: uv run ruff check conftest.py services/api-gateway services/worker
 
       - name: Ruff format check
-        run: uv run ruff format --check services/api-gateway services/worker
+        run: uv run ruff format --check conftest.py services/api-gateway services/worker
 
       - name: Mypy typecheck
         shell: bash
@@ -94,10 +96,30 @@ jobs:
       - name: Helm lint — moiraweave chart
         run: |
           curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant-helm https://qdrant.github.io/qdrant-helm
+          helm dependency build infra/helm/moiraweave
+          shopt -s nullglob
+          for chart in infra/helm/moiraweave/charts/*.tgz; do
+            tar -xzf "$chart" -C infra/helm/moiraweave/charts
+          done
           helm lint infra/helm/moiraweave
+          helm template moiraweave infra/helm/moiraweave \
+            -f tests/helm/values-workloads.yaml \
+            >/tmp/moiraweave-workloads.yaml
+          grep -q "name: hermes" /tmp/moiraweave-workloads.yaml
+          grep -q "name: openclaw" /tmp/moiraweave-workloads.yaml
+          helm template moiraweave infra/helm/moiraweave \
+            -f tests/helm/values-deployment-controller.yaml \
+            >/tmp/moiraweave-deployment-controller.yaml
+          grep -q "name: moiraweave-deployment-controller" /tmp/moiraweave-deployment-controller.yaml
+          grep -q "app.kubernetes.io/component: deployment-controller" /tmp/moiraweave-deployment-controller.yaml
 
       - name: YAML lint — infra/k8s
-        run: uv run yamllint -d relaxed infra/k8s/
+        run: >
+          uv run yamllint
+          -d "{extends: relaxed, rules: {line-length: disable}}"
+          infra/k8s/
 
   # ---------------------------------------------------------------------------
   # Job 2 — Build Docker images and push to GHCR
@@ -107,8 +129,8 @@ jobs:
     needs: lint-test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Only build+push on pushes to main or release branches (not PRs).
-    if: github.event_name == 'push'
+    # Build+push on pushes and manual dispatches, never on PRs.
+    if: github.event_name != 'pull_request'
     permissions:
       packages: write            # GHCR push
       contents: read
@@ -116,19 +138,20 @@ jobs:
       # Uncomment for cloud OIDC (AWS/GCP/Azure):
       # id-token: write
     strategy:
+      fail-fast: false
       matrix:
         service:
           - api-gateway
           - worker
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -137,9 +160,11 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/moiraweave-labs/moiraweave
           tags: |
             type=sha,prefix=sha-,format=short
             type=ref,event=branch
@@ -148,7 +173,7 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
@@ -161,20 +186,38 @@ jobs:
           pull: true
           platforms: linux/amd64
 
+      - name: Resolve image scan reference
+        id: scan-ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_PREFIX}/${{ matrix.service }}:sha-${GITHUB_SHA::7}"
+          for attempt in {1..12}; do
+            if docker buildx imagetools inspect "${image}" >/dev/null 2>&1; then
+              echo "image=${image}" >>"${GITHUB_OUTPUT}"
+              echo "Resolved image scan reference: ${image}"
+              exit 0
+            fi
+            echo "Image ${image} is not visible yet; retrying after GHCR propagation delay (${attempt}/12)."
+            sleep 5
+          done
+          echo "::error title=GHCR image is not visible::${image} was pushed but could not be inspected after retries."
+          exit 1
+
       - name: Trivy — enforce policy (table)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.scan-ref.outputs.image }}
           format: table
           severity: CRITICAL,HIGH
           exit-code: "1"
           ignore-unfixed: true
 
       - name: Trivy — generate SARIF for Code Scanning
-        if: always()
+        if: ${{ always() && !cancelled() && steps.scan-ref.outputs.image != '' }}
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_PREFIX }}/${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ steps.scan-ref.outputs.image }}
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
           severity: CRITICAL,HIGH
@@ -182,14 +225,126 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy SARIF report
-        if: always()
+        if: ${{ always() && hashFiles(format('trivy-{0}.sarif', matrix.service)) != '' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
           category: trivy-${{ matrix.service }}
 
   # ---------------------------------------------------------------------------
-  # Job 4 — E2E tests (docker-compose stack + pytest)
+  # Job 3 — Verify public image pulls
+  # ---------------------------------------------------------------------------
+  public-image-smoke:
+    name: Public image pull smoke
+    needs: build-push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - name: Verify anonymous GHCR pulls
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          failed=0
+          while read -r image settings_url
+          do
+            echo "Checking anonymous pull metadata for ${image}"
+            image_ok=0
+            for attempt in {1..12}; do
+              if docker manifest inspect "${image}" >/dev/null; then
+                echo "${image} is pullable without authentication."
+                image_ok=1
+                break
+              fi
+              echo "Anonymous pull check failed on attempt ${attempt}/12; retrying after GHCR propagation delay."
+              sleep 10
+            done
+            if [ "${image_ok}" -ne 1 ]; then
+              echo "::error title=GHCR image is not public::${image} was pushed, but it is not pullable without authentication. Set package visibility to public in GitHub Packages: ${settings_url}"
+              failed=1
+            fi
+          done <<EOF
+          ${IMAGE_PREFIX}/api-gateway:latest https://github.com/orgs/moiraweave-labs/packages/container/package/moiraweave%2Fapi-gateway/settings
+          ${IMAGE_PREFIX}/worker:latest https://github.com/orgs/moiraweave-labs/packages/container/package/moiraweave%2Fworker/settings
+          EOF
+          exit "${failed}"
+
+  # ---------------------------------------------------------------------------
+  # Job 4 — Publish Helm chart to GHCR OCI registry
+  # ---------------------------------------------------------------------------
+  helm-chart-publish:
+    name: Publish Helm chart
+    needs: lint-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Helm
+        shell: bash
+        run: curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Build chart dependencies
+        shell: bash
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add qdrant-helm https://qdrant.github.io/qdrant-helm
+          helm dependency build infra/helm/moiraweave
+          shopt -s nullglob
+          for chart in infra/helm/moiraweave/charts/*.tgz; do
+            tar -xzf "$chart" -C infra/helm/moiraweave/charts
+          done
+
+      - name: Log in to GHCR Helm registry
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package and push chart
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          chart_ref="oci://ghcr.io/moiraweave-labs/charts/moiraweave"
+          if helm show chart "${chart_ref}" --version "${version}" >/dev/null 2>&1; then
+            echo "Chart ${chart_ref}:${version} already exists; skipping push."
+            exit 0
+          fi
+          helm package infra/helm/moiraweave \
+            --destination /tmp/moiraweave-chart \
+            --version "${version}" \
+            --app-version "sha-${GITHUB_SHA::7}"
+          helm push "/tmp/moiraweave-chart/moiraweave-${version}.tgz" \
+            oci://ghcr.io/moiraweave-labs/charts
+
+      - name: Verify anonymous chart pull
+        shell: bash
+        run: |
+          set -euo pipefail
+          helm registry logout ghcr.io >/dev/null 2>&1 || true
+          version="0.1.${GITHUB_RUN_NUMBER}"
+          chart_ref="oci://ghcr.io/moiraweave-labs/charts/moiraweave"
+          settings_url="https://github.com/orgs/moiraweave-labs/packages/container/package/charts%2Fmoiraweave/settings"
+          for attempt in {1..12}; do
+            if helm pull "${chart_ref}" --version "${version}" --destination /tmp >/dev/null 2>&1; then
+              echo "${chart_ref}:${version} is pullable without authentication."
+              exit 0
+            fi
+            echo "Anonymous chart pull failed on attempt ${attempt}/12; retrying."
+            sleep 10
+          done
+          echo "::error title=GHCR Helm chart is not public::${chart_ref}:${version} was pushed, but it is not pullable without authentication. Set package visibility to public: ${settings_url}"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Job 5 — E2E tests (docker-compose stack + pytest)
   # ---------------------------------------------------------------------------
   e2e:
     name: E2E tests
@@ -199,44 +354,46 @@ jobs:
     # Run on every push/PR to main so regressions are caught early.
     permissions:
       contents: read
+    env:
+      E2E_TEST_JWT_SECRET: ${{ secrets.E2E_JWT_SECRET_KEY || 'e2e-local-test-secret-not-for-production' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v8.2.0
 
       - name: Install all dependencies (workspace root)
         run: uv sync --frozen --all-packages
 
-      - name: Build mock-step image
+      - name: Build mock-model image
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
             -f tests/e2e/docker-compose.e2e.yml \
-            build mock-step
+            build mock-model
 
       - name: Start E2E stack (wait for healthchecks)
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
-          E2E_JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
+          E2E_JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
             -f tests/e2e/docker-compose.e2e.yml \
-            up -d --wait
+            up -d --wait --build
 
       - name: Run E2E tests
         env:
           E2E_BASE_URL: http://localhost:8000
-          E2E_JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          E2E_JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           uv run pytest tests/e2e/ -v --no-cov --import-mode=importlib \
             --tb=short
@@ -244,7 +401,7 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -254,7 +411,7 @@ jobs:
       - name: Tear down stack (always)
         if: always()
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -279,7 +436,7 @@ jobs:
       # Fallback to GITHUB_TOKEN keeps the job non-fatal if the secret is absent
       # (e.g. forks), but the push to main will fail in that case.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           token: ${{ secrets.HELM_BUMP_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -294,12 +451,12 @@ jobs:
           fi
 
       - name: Bump api-gateway image tag
-        uses: mikefarah/yq@v4.45.1
+        uses: mikefarah/yq@v4.53.3
         with:
           cmd: yq -i '.apiGateway.image.tag = "${{ steps.release.outputs.tag }}"' infra/helm/moiraweave/values.yaml
 
       - name: Bump worker image tag
-        uses: mikefarah/yq@v4.45.1
+        uses: mikefarah/yq@v4.53.3
         with:
           cmd: yq -i '.worker.image.tag = "${{ steps.release.outputs.tag }}"' infra/helm/moiraweave/values.yaml
 

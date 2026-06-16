@@ -3,7 +3,7 @@
 
 # Runtime services
 /services/          @moiraweave-labs/maintainers
-/services/step-sdk/ @moiraweave-labs/maintainers
+/services/model-sdk/ @moiraweave-labs/maintainers
 
 # Infrastructure
 /infra/             @moiraweave-labs/maintainers

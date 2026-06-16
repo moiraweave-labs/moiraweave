@@ -1,7 +1,7 @@
-"""moiraweave-step-sdk — KServe V2 protocol base classes for workload components."""
+"""moiraweave-model-sdk — KServe V2 protocol base classes for workload components."""
 
-from moiraweave_step_sdk.base import BaseStep
-from moiraweave_step_sdk.models import (
+from moiraweave_model_sdk.base import BaseModelService
+from moiraweave_model_sdk.models import (
     ErrorResponse,
     InferRequest,
     InferResponse,
@@ -11,7 +11,7 @@ from moiraweave_step_sdk.models import (
 )
 
 __all__ = [
-    "BaseStep",
+    "BaseModelService",
     "ErrorResponse",
     "InferRequest",
     "InferResponse",
