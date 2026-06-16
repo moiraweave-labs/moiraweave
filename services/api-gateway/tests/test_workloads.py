@@ -745,6 +745,39 @@ async def test_preflight_reports_secret_warnings(
     assert "OPENAI_API_KEY=..." in secret_action["command"]
 
 
+async def test_preflight_kubernetes_secrets_require_operator_check(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    await _register(auth_client)
+
+    resp = await auth_client.post(
+        "/v1/workloads/hermes/preflight",
+        json={"target": "kubernetes", "env": "dev"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "warning"
+    secrets = next(check for check in body["checks"] if check["name"] == "secrets")
+    assert secrets["metadata"]["missing"] == []
+    assert secrets["metadata"]["verification"] == "operator-cli"
+    assert "OPENAI_API_KEY" in secrets["metadata"]["required"]
+    secret_action = next(
+        item
+        for item in body["action_guide"]
+        if item["title"] == "Verify Kubernetes Secret Keys"
+    )
+    assert secret_action["state"] == "warning"
+    assert "OPENAI_API_KEY" in secret_action["detail"]
+    assert "Values stay in the cluster" in secret_action["detail"]
+    assert (
+        secret_action["command"] == "moira secrets list --target kubernetes --env dev "
+        "--kubernetes-secret moiraweave-secrets --check"
+    )
+
+
 async def test_preflight_reports_missing_deployment_record(
     auth_client: AsyncClient,
 ) -> None:

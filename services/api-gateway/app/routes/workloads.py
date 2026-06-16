@@ -1280,7 +1280,24 @@ def _preflight_action_guide(
 ) -> list[PreflightAction]:
     actions: list[PreflightAction] = []
     missing_secrets = _preflight_missing_secrets(checks)
-    if missing_secrets:
+    required_secrets = _preflight_required_secrets(checks)
+    if target == "kubernetes" and required_secrets:
+        actions.append(
+            PreflightAction(
+                title="Verify Kubernetes Secret Keys",
+                state="warning",
+                detail=(
+                    "Required secret names must exist as Kubernetes Secret keys: "
+                    f"{', '.join(required_secrets)}. Values stay in the cluster "
+                    "or external secret manager."
+                ),
+                command=(
+                    "moira secrets list --target kubernetes "
+                    f"--env {env} --kubernetes-secret moiraweave-secrets --check"
+                ),
+            )
+        )
+    elif missing_secrets:
         local_secret_lines = "\\n".join(f"{name}=..." for name in missing_secrets)
         kubernetes_secret_args = " ".join(
             f"--from-literal={name}=..." for name in missing_secrets
@@ -1305,7 +1322,7 @@ def _preflight_action_guide(
     for check in checks:
         if check.status == "passed":
             continue
-        if check.name == "secrets" and missing_secrets:
+        if check.name == "secrets" and (missing_secrets or target == "kubernetes"):
             continue
         if check.name == "deployment_record":
             actions.append(
@@ -1416,6 +1433,14 @@ def _preflight_missing_secrets(checks: list[PreflightCheck]) -> list[str]:
     if not isinstance(missing, list):
         return []
     return sorted({str(name) for name in missing if str(name)})
+
+
+def _preflight_required_secrets(checks: list[PreflightCheck]) -> list[str]:
+    secret_check = next((check for check in checks if check.name == "secrets"), None)
+    required = secret_check.metadata.get("required") if secret_check else None
+    if not isinstance(required, list):
+        return []
+    return sorted({str(name) for name in required if str(name)})
 
 
 def _preflight_check_title(name: str) -> str:
@@ -1930,24 +1955,50 @@ async def _run_preflight(
     secret_names = sorted(
         {secret_name for secret_name, _ in _workload_secret_references(workload)}
     )
-    missing_secrets = sorted(
-        name for name in secret_names if not _is_secret_present(name)
-    )
-    checks.append(
-        PreflightCheck(
-            name="secrets",
-            status="warning" if missing_secrets else "passed",
-            message=(
-                "All required secret environment variables are present."
-                if not missing_secrets
-                else f"Missing secret references: {', '.join(missing_secrets)}."
-            ),
-            remediation="Add missing names to local .env or Kubernetes secrets."
-            if missing_secrets
-            else None,
-            metadata={"required": secret_names, "missing": missing_secrets},
+    if normalized_target == "kubernetes":
+        checks.append(
+            PreflightCheck(
+                name="secrets",
+                status="warning" if secret_names else "passed",
+                message=(
+                    "Kubernetes Secret keys must be verified from an operator "
+                    f"shell: {', '.join(secret_names)}."
+                    if secret_names
+                    else "No required secrets declared."
+                ),
+                remediation=(
+                    "Run moira secrets list --target kubernetes "
+                    f"--env {env} --kubernetes-secret moiraweave-secrets --check."
+                )
+                if secret_names
+                else None,
+                metadata={
+                    "required": secret_names,
+                    "missing": [],
+                    "verification": "operator-cli",
+                    "kubernetes_secret": "moiraweave-secrets",
+                },
+            )
         )
-    )
+    else:
+        missing_secrets = sorted(
+            name for name in secret_names if not _is_secret_present(name)
+        )
+        checks.append(
+            PreflightCheck(
+                name="secrets",
+                status="warning" if missing_secrets else "passed",
+                message=(
+                    "All required secret environment variables are present."
+                    if not missing_secrets
+                    else f"Missing secret references: {', '.join(missing_secrets)}."
+                ),
+                remediation="Add missing names to local .env or Kubernetes secrets."
+                if missing_secrets
+                else None,
+                metadata={"required": secret_names, "missing": missing_secrets},
+            )
+        )
 
     if workload.spec.type == "agent-service":
         adapter = workload.spec.agent.adapter
