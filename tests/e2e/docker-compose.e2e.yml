@@ -1,7 +1,7 @@
 # docker-compose.e2e.yml — E2E test overrides
 #
 # Extends docker-compose.yml to:
-#   1. Add the mock-step container (KServe V2 echo step, no ML deps)
+#   1. Add the mock-model container (KServe V2 echo model, no ML deps)
 #   2. Mount the E2E fixture workloads over the default workloads/ dir
 #   3. Wire up service dependencies so the stack is ready when tests run
 #
@@ -13,10 +13,10 @@
 # JWT_SECRET_KEY defaults to a test-only value if not set (local dev only).
 
 services:
-  mock-step:
+  mock-model:
     build:
       context: .
-      dockerfile: tests/e2e/mock_step/Dockerfile
+      dockerfile: tests/e2e/mock_model/Dockerfile
     healthcheck:
       test:
         - CMD-SHELL
@@ -38,6 +38,9 @@ services:
       JWT_SECRET_KEY: "${E2E_JWT_SECRET_KEY:-e2e-local-test-secret-not-for-production}"
       # OTel disabled for tests to reduce noise and avoid Jaeger dependency.
       OTEL_ENABLED: "false"
+      # E2E exercises the control plane, not semantic search. Keep FastEmbed
+      # disabled so stack startup does not depend on external model downloads.
+      EMBEDDING_MODEL: ""
       WORKLOADS_DIR: "/e2e-workloads"
     volumes:
       - ./tests/e2e/fixtures/workloads:/e2e-workloads:ro
@@ -49,7 +52,7 @@ services:
         condition: service_healthy
       jaeger:
         condition: service_started
-      mock-step:
+      mock-model:
         condition: service_healthy
 
   worker:
@@ -62,5 +65,5 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      mock-step:
+      mock-model:
         condition: service_healthy

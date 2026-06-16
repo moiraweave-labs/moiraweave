@@ -1,11 +1,13 @@
 {{- range $name, $workload := .Values.workloads }}
-{{- if and ($workload.enabled) ($workload.image) ($workload.ports) }}
-{{- $ctx := dict "root" $ "name" $name }}
+{{- $deployment := default dict $workload.deployment }}
+{{- $targets := default (list "local" "kubernetes") $deployment.targets }}
+{{- if and ($workload.enabled) (ne (default "managed" $deployment.mode) "external") (has "kubernetes" $targets) ($workload.image) ($workload.ports) }}
+{{- $ctx := dict "root" $ "name" $name "workload" $workload }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "moiraweave.workload.fullname" $ctx }}
+  name: {{ include "moiraweave.workload.serviceName" $ctx }}
   labels:
     {{- include "moiraweave.labels" $ | nindent 4 }}
     app.kubernetes.io/component: workload

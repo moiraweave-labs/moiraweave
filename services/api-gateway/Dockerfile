@@ -43,11 +43,14 @@ COPY services/api-gateway/app ./app
 # adding the source directory to the Python path via a .pth file.
 RUN echo '/app/services/shared' > /app/.venv/lib/python3.13/site-packages/moiraweave_shared_local.pth
 
-# Pre-download the embedding model so the first request has no cold-start.
-# Must run before switching to non-root user so files are owned by root and
-# readable by appuser.
+# Optionally pre-download the embedding model. Keep this disabled by default so
+# reproducible image builds do not depend on external model registry uptime.
+ARG PRELOAD_FASTEMBED_MODEL=false
 ENV FASTEMBED_CACHE_PATH=/app/.models
-RUN python -c "from fastembed import TextEmbedding; list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warmup']))"
+RUN mkdir -p /app/.models \
+    && if [ "$PRELOAD_FASTEMBED_MODEL" = "true" ]; then \
+        python -c "from fastembed import TextEmbedding; list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warmup']))"; \
+    fi
 
 # Run as non-root user.
 RUN useradd --no-create-home --shell /bin/false appuser \

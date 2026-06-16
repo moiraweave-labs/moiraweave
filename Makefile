@@ -37,7 +37,7 @@ TF_AWS_DIR   ?= infra/terraform/envs/aws
 TF_GCP_DIR   ?= infra/terraform/envs/gcp
 
 .PHONY: help install lock lint lint-fix format typecheck test test-fast \
-        test-e2e test-e2e-up test-e2e-down ci \
+        test-real-agents test-e2e test-e2e-up test-e2e-down ci \
         pre-commit-install pre-commit-run \
         up up-mlops up-all down logs ps build \
         kind-up kind-status kind-down \
@@ -78,12 +78,12 @@ format:  ## Run ruff formatter
 	uv run ruff format .
 
 SHARED_PATH := $(shell pwd)/services/shared
-STEP_SDK_PATH := $(shell pwd)/services/step-sdk
+MODEL_SDK_PATH := $(shell pwd)/services/model-sdk
 
 typecheck:  ## Run mypy type checker per service (avoids dual-app namespace conflict)
 	cd services/api-gateway && MYPYPATH=$(SHARED_PATH) uv run mypy app/
 	cd services/worker && MYPYPATH=$(SHARED_PATH) uv run mypy app/
-	cd services/step-sdk && uv run mypy moiraweave_step_sdk/
+	cd services/model-sdk && uv run mypy moiraweave_model_sdk/
 
 pre-commit-run:  ## Run pre-commit on all files
 	uv run pre-commit run --all-files
@@ -97,13 +97,18 @@ test:  ## Run pytest with coverage
 test-fast:  ## Run pytest without coverage (faster)
 	uv run pytest --no-cov
 
+test-real-agents:  ## Run optional live Hermes/OpenClaw adapter certification tests
+	@echo "==> Running optional live Hermes/OpenClaw adapter tests..."
+	@echo "    Set MOIRAWEAVE_REAL_AGENT_TESTS=1 plus runtime URL env vars to hit live runtimes."
+	uv run --frozen pytest services/worker/tests/test_real_agent_runtimes.py -q --no-cov --import-mode=importlib -m real_agent
+
 E2E_COMPOSE := docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml
 
-test-e2e:  ## Build mock-step, start E2E stack, run E2E tests, tear down
-	@echo "==> Building mock-step image..."
-	$(E2E_COMPOSE) build mock-step
+test-e2e:  ## Build mock-model, start E2E stack, run E2E tests, tear down
+	@echo "==> Building mock-model image..."
+	$(E2E_COMPOSE) build mock-model
 	@echo "==> Starting E2E stack (waiting for healthchecks)..."
-	$(E2E_COMPOSE) up -d --wait
+	$(E2E_COMPOSE) up -d --wait --build
 	@echo "==> Running E2E tests..."
 	uv run pytest tests/e2e/ -v --no-cov --import-mode=importlib; \
 	  STATUS=$$?; \
@@ -112,8 +117,8 @@ test-e2e:  ## Build mock-step, start E2E stack, run E2E tests, tear down
 	  exit $$STATUS
 
 test-e2e-up:  ## Start E2E stack only (for iterating on tests manually)
-	$(E2E_COMPOSE) build mock-step
-	$(E2E_COMPOSE) up -d --wait
+	$(E2E_COMPOSE) build mock-model
+	$(E2E_COMPOSE) up -d --wait --build
 
 test-e2e-down:  ## Stop and remove E2E stack
 	$(E2E_COMPOSE) down
@@ -203,6 +208,7 @@ helm-monitoring-install:  ## Install the monitoring stack
 	helm upgrade --install moiraweave-monitoring $(HELM_MONITORING_CHART) \
 		--namespace $(HELM_MONITORING_NS) --create-namespace \
 		-f $(HELM_MONITORING_VALUES)
+	kubectl apply -f infra/k8s/monitoring/
 
 helm-monitoring-upgrade:  ## Upgrade the monitoring stack
 	$(MAKE) helm-monitoring-install

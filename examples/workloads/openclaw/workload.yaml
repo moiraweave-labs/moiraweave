@@ -1,0 +1,85 @@
+apiVersion: moiraweave.io/v1alpha1
+kind: Workload
+metadata:
+  name: openclaw
+  labels:
+    moiraweave.io/template: openclaw
+    moiraweave.io/runtime: openclaw
+  annotations:
+    moiraweave.io/tool-ownership: runtime
+spec:
+  type: agent-service
+  image: ghcr.io/openclaw/openclaw:latest
+  deployment:
+    mode: managed
+    targets:
+      - local
+      - kubernetes
+    serviceName: openclaw
+    localNetwork: moiraweave-net
+    replicas: 1
+  execution:
+    mode: session
+    timeoutSeconds: 172800
+  ports:
+    - name: gateway
+      port: 18789
+  livenessProbe:
+    tcpSocket:
+      port: gateway
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    tcpSocket:
+      port: gateway
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  persistence:
+    enabled: true
+    mountPath: /workspace
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  agent:
+    adapter: openclaw
+    toolOwnership: runtime
+    authTokenEnv: OPENCLAW_GATEWAY_TOKEN
+    agentId: main
+    workspaceMount: /workspace
+    exposedChannels:
+      - ui
+      - api
+    externalOwnedChannels:
+      - telegram
+    capabilities:
+      - browser
+      - tools
+      - long-running
+    runtimeRequirements:
+      filesystem:
+        persistentWorkspace: true
+        workspaceMount: /workspace
+      network:
+        egress: enabled
+      webSearch:
+        enabled: true
+      browser:
+        mode: runtime-managed
+      terminal:
+        mode: runtime-managed
+        approval: runtime
+      mcp:
+        enabled: true
+      messaging:
+        enabled: true
+    dispatchTimeoutSeconds: 10
+    pollIntervalSeconds: 2

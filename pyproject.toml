@@ -1,7 +1,7 @@
 [project]
-name = "moiraweave-core"
+name = "moiraweave"
 version = "0.1.1"
-description = "MoiraWeave runtime platform: API gateway, workers, infra, and pipelines"
+description = "MoiraWeave runtime platform: API gateway, workers, workload adapters, and infrastructure"
 requires-python = ">=3.13"
 license = { text = "MIT" }
 dependencies = []
@@ -15,12 +15,12 @@ members = ["services/*"]
 
 [tool.uv.sources]
 moiraweave-shared = { workspace = true }
-moiraweave-step-sdk = { workspace = true }
+moiraweave-model-sdk = { workspace = true }
 
 [dependency-groups]
 dev = [
     "moiraweave-shared",
-    "moiraweave-step-sdk",
+    "moiraweave-model-sdk",
     "fakeredis>=2.26",
     "httpx>=0.28",
     "mypy>=2.0",
@@ -95,6 +95,7 @@ asyncio_mode = "auto"
 addopts = "--cov=services --cov-report=term-missing --cov-report=xml --import-mode=importlib --ignore=tests/e2e"
 markers = [
     "e2e: end-to-end tests that require the docker-compose stack (run via make test-e2e)",
+    "real_agent: optional tests that require live Hermes/OpenClaw runtime endpoints",
 ]
 
 

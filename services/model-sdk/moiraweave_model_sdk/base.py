@@ -1,4 +1,4 @@
-"""BaseStep — abstract base class for KServe-compatible workload components.
+"""BaseModelService — abstract base class for KServe-compatible workload components.
 
 Each component exposes a KServe V2-compatible REST API via :meth:`build_app`.
 Concrete components must implement :attr:`name`, :attr:`version`, and
@@ -6,10 +6,10 @@ Concrete components must implement :attr:`name`, :attr:`version`, and
 
 Usage::
 
-    class MyStep(BaseStep):
+    class MyModelService(BaseModelService):
         @property
         def name(self) -> str:
-            return "my-step"
+            return "my-model"
 
         @property
         def version(self) -> str:
@@ -18,14 +18,14 @@ Usage::
         async def predict(self, request: InferRequest) -> InferResponse:
             ...
 
-    app = MyStep().build_app()
+    app = MyModelService().build_app()
 """
 
 from abc import ABC, abstractmethod
 
 from fastapi import FastAPI, HTTPException
 
-from moiraweave_step_sdk.models import (
+from moiraweave_model_sdk.models import (
     InferRequest,
     InferResponse,
     MetadataTensor,
@@ -35,7 +35,7 @@ from moiraweave_step_sdk.models import (
 )
 
 
-class BaseStep(ABC):
+class BaseModelService(ABC):
     """Abstract base for a single-model KServe V2 inference component.
 
     Sub-classes must implement :attr:`name`, :attr:`version`, and
@@ -51,7 +51,7 @@ class BaseStep(ABC):
     @property
     @abstractmethod
     def version(self) -> str:
-        """Step version string, e.g. ``"1"``."""
+        """Model service version string, e.g. ``"1"``."""
 
     @abstractmethod
     async def predict(self, request: InferRequest) -> InferResponse:
@@ -62,7 +62,7 @@ class BaseStep(ABC):
         """
 
     async def is_ready(self) -> bool:
-        """Return ``True`` when the step is ready to serve inference.
+        """Return ``True`` when the model service is ready to serve inference.
 
         Override to add custom readiness checks (model warm-up, downstream
         dependency availability, etc.).  The default always returns ``True``.
@@ -71,9 +71,10 @@ class BaseStep(ABC):
 
     @property
     def task(self) -> str:
-        """MoiraWeave task name, e.g. ``"audio-transcribe"``.
+        """Model capability label, e.g. ``"audio-transcribe"``.
 
-        Override in subclasses to expose task identity via ``GET /v2/models/{name}``.
+        Override in subclasses to expose capability metadata through
+        ``GET /v2/models/{name}``.
         """
         return ""
 
@@ -89,7 +90,7 @@ class BaseStep(ABC):
     def inputs(self) -> list[MetadataTensor]:
         """Input tensor descriptors for the model metadata endpoint.
 
-        Override to return the step's actual input schema.
+        Override to return the model service's actual input schema.
         """
         return []
 
@@ -97,12 +98,12 @@ class BaseStep(ABC):
     def outputs(self) -> list[MetadataTensor]:
         """Output tensor descriptors for the model metadata endpoint.
 
-        Override to return the step's actual output schema.
+        Override to return the model service's actual output schema.
         """
         return []
 
     def build_app(self) -> FastAPI:
-        """Construct and return the FastAPI application for this step.
+        """Construct and return the FastAPI application for this model service.
 
         Registers the following endpoints:
 
@@ -113,11 +114,11 @@ class BaseStep(ABC):
 
         :returns: Configured :class:`fastapi.FastAPI` instance.
         """
-        step = self  # captured by closures below
+        service = self  # captured by closures below
         app = FastAPI(
-            title=step.name,
-            version=step.version,
-            description=f"MoiraWeave step: {step.name}",
+            title=service.name,
+            version=service.version,
+            description=f"MoiraWeave model service: {service.name}",
         )
 
         @app.get("/v2/health/live", response_model=ServerLiveResponse)
@@ -126,26 +127,26 @@ class BaseStep(ABC):
 
         @app.get("/v2/health/ready", response_model=ServerLiveResponse)
         async def server_ready() -> ServerLiveResponse:
-            return ServerLiveResponse(live=await step.is_ready())
+            return ServerLiveResponse(live=await service.is_ready())
 
         @app.get(
             "/v2/models/{model_name}",
             response_model=ModelMetadataResponse,
         )
         async def model_metadata(model_name: str) -> ModelMetadataResponse:
-            if model_name != step.name:
+            if model_name != service.name:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Unknown model: {model_name!r}",
                 )
             return ModelMetadataResponse(
-                name=step.name,
-                versions=[step.version],
+                name=service.name,
+                versions=[service.version],
                 platform="moiraweave",
-                inputs=step.inputs,
-                outputs=step.outputs,
-                task=step.task,
-                implementation=step.implementation,
+                inputs=service.inputs,
+                outputs=service.outputs,
+                task=service.task,
+                implementation=service.implementation,
             )
 
         @app.get(
@@ -153,23 +154,26 @@ class BaseStep(ABC):
             response_model=ModelReadyResponse,
         )
         async def model_ready(model_name: str) -> ModelReadyResponse:
-            if model_name != step.name:
+            if model_name != service.name:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Unknown model: {model_name!r}",
                 )
-            return ModelReadyResponse(name=step.name, ready=await step.is_ready())
+            return ModelReadyResponse(
+                name=service.name,
+                ready=await service.is_ready(),
+            )
 
         @app.post(
             "/v2/models/{model_name}/infer",
             response_model=InferResponse,
         )
         async def infer(model_name: str, request: InferRequest) -> InferResponse:
-            if model_name != step.name:
+            if model_name != service.name:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Unknown model: {model_name!r}",
                 )
-            return await step.predict(request)
+            return await service.predict(request)
 
         return app

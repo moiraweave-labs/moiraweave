@@ -1,0 +1,13 @@
+deploymentController:
+  enabled: true
+  env: prod
+  namespace: moiraweave-prod
+  releaseName: moiraweave-prod
+  controllerId: controller-prod
+  chartRef: oci://ghcr.io/moiraweave-labs/charts/moiraweave
+  auth:
+    existingSecret: moiraweave-controller-token
+    tokenKey: MOIRA_TOKEN
+
+ui:
+  enabled: true
