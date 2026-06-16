@@ -5,15 +5,15 @@ description = "MoiraWeave async inference worker (Redis Streams consumer)"
 requires-python = ">=3.13"
 dependencies = [
     "moiraweave-shared",
-    "redis[hiredis]>=5.0",
+    "redis[hiredis]>=7.4.0",
     "asyncpg>=0.30",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.14.1",
     # Qdrant vector store (RAG/search workloads)
     "qdrant-client[fastembed]>=1.12",
     # Prometheus metrics server
-    "prometheus-client>=0.21",
+    "prometheus-client>=0.25.0",
     # MLflow — inference metrics tracking
-    "mlflow>=3.0",
+    "mlflow>=3.12.0",
     # HTTP client for calling model, pipeline, and agent workloads
     "httpx>=0.28.1",
     # WebSocket client for OpenClaw Gateway JSON-RPC
