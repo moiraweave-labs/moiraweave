@@ -1,14 +1,14 @@
-"""Minimal KServe V2 echo step for E2E tests.
+"""Minimal KServe V2 echo model for E2E tests.
 
 Returns every input tensor unchanged as output tensors.
 No ML models, no external dependencies — pure pass-through.
 """
 
-from moiraweave_step_sdk.base import BaseStep
-from moiraweave_step_sdk.models import InferRequest, InferResponse
+from moiraweave_model_sdk.base import BaseModelService
+from moiraweave_model_sdk.models import InferRequest, InferResponse
 
 
-class EchoStep(BaseStep):
+class EchoModelService(BaseModelService):
     """Returns all input tensors unchanged as outputs."""
 
     @property
@@ -31,4 +31,4 @@ class EchoStep(BaseStep):
         )
 
 
-app = EchoStep().build_app()
+app = EchoModelService().build_app()

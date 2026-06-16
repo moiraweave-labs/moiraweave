@@ -82,10 +82,38 @@ Fully qualified name for the UI component.
 {{- end }}
 
 {{/*
+Fully qualified name for the deployment controller component.
+*/}}
+{{- define "moiraweave.deploymentController.fullname" -}}
+{{- printf "%s-deployment-controller" (include "moiraweave.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Service account name for the deployment controller.
+*/}}
+{{- define "moiraweave.deploymentController.serviceAccountName" -}}
+{{- if .Values.deploymentController.serviceAccount.create }}
+{{- default (include "moiraweave.deploymentController.fullname" .) .Values.deploymentController.serviceAccount.name }}
+{{- else }}
+{{- default (include "moiraweave.serviceAccountName" .) .Values.deploymentController.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Fully qualified name for one workload.
 */}}
 {{- define "moiraweave.workload.fullname" -}}
 {{- printf "%s-%s" (include "moiraweave.fullname" .root) .name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Stable in-cluster DNS name for one workload runtime.
+Defaults to workload metadata.name so manifests resolve the same way in
+Docker Compose and Kubernetes.
+*/}}
+{{- define "moiraweave.workload.serviceName" -}}
+{{- $deployment := default dict .workload.deployment -}}
+{{- default .name $deployment.serviceName | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*

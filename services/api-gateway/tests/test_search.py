@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI
 from httpx import AsyncClient
 from qdrant_client.fastembed_common import QueryResponse
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -96,6 +97,21 @@ async def test_search_no_auth_returns_4xx(client: AsyncClient) -> None:
         "/v1/search", json={"collection": "docs", "query": "test"}
     )
     assert response.status_code in {401, 403}
+
+
+async def test_search_disabled_returns_503(
+    auth_client: AsyncClient, api_app: FastAPI
+) -> None:
+    api_app.state.search_enabled = False
+
+    response = await auth_client.post(
+        "/v1/search", json={"collection": "docs", "query": "test"}
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Semantic search is disabled because EMBEDDING_MODEL is empty."
+    )
 
 
 async def test_search_query_too_long_returns_422(auth_client: AsyncClient) -> None:

@@ -1,16 +1,17 @@
-"""Tests for moiraweave_step_sdk BaseStep and KServe V2 models."""
+"""Tests for moiraweave_model_sdk BaseModelService and KServe V2 models."""
 
 import pytest
-from fastapi.testclient import TestClient
-from moiraweave_step_sdk.base import BaseStep
-from moiraweave_step_sdk.models import InferRequest, InferResponse
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient, Response
+from moiraweave_model_sdk.base import BaseModelService
+from moiraweave_model_sdk.models import InferRequest, InferResponse
 
 # ---------------------------------------------------------------------------
-# Minimal concrete step used across all tests
+# Minimal concrete model service used across all tests
 # ---------------------------------------------------------------------------
 
 
-class EchoStep(BaseStep):
+class EchoModelService(BaseModelService):
     """Returns the first input tensor unchanged."""
 
     @property
@@ -30,9 +31,28 @@ class EchoStep(BaseStep):
 
 
 @pytest.fixture
-def client() -> TestClient:
-    app = EchoStep().build_app()
-    return TestClient(app)
+def app() -> FastAPI:
+    return EchoModelService().build_app()
+
+
+async def _client_get(app: FastAPI, path: str) -> Response:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        return await client.get(path)
+
+
+async def _client_post(
+    app: FastAPI,
+    path: str,
+    payload: dict[str, object],
+) -> Response:
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        return await client.post(path, json=payload)
 
 
 # ---------------------------------------------------------------------------
@@ -40,26 +60,26 @@ def client() -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def test_liveness_returns_live(client: TestClient) -> None:
-    resp = client.get("/v2/health/live")
+async def test_liveness_returns_live(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/health/live")
     assert resp.status_code == 200
     assert resp.json() == {"live": True}
 
 
-def test_server_ready_returns_live(client: TestClient) -> None:
-    resp = client.get("/v2/health/ready")
+async def test_server_ready_returns_live(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/health/ready")
     assert resp.status_code == 200
     assert resp.json() == {"live": True}
 
 
-def test_model_ready_returns_ready(client: TestClient) -> None:
-    resp = client.get("/v2/models/echo/ready")
+async def test_model_ready_returns_ready(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/models/echo/ready")
     assert resp.status_code == 200
     assert resp.json() == {"name": "echo", "ready": True}
 
 
-def test_model_ready_unknown_model_returns_404(client: TestClient) -> None:
-    resp = client.get("/v2/models/unknown/ready")
+async def test_model_ready_unknown_model_returns_404(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/models/unknown/ready")
     assert resp.status_code == 404
 
 
@@ -68,14 +88,14 @@ def test_model_ready_unknown_model_returns_404(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_infer_echoes_input(client: TestClient) -> None:
+async def test_infer_echoes_input(app: FastAPI) -> None:
     payload = {
         "id": "req-1",
         "inputs": [
             {"name": "text", "shape": [1], "datatype": "BYTES", "data": ["hello"]}
         ],
     }
-    resp = client.post("/v2/models/echo/infer", json=payload)
+    resp = await _client_post(app, "/v2/models/echo/infer", payload)
     assert resp.status_code == 200
     body = resp.json()
     assert body["model_name"] == "echo"
@@ -84,19 +104,19 @@ def test_infer_echoes_input(client: TestClient) -> None:
     assert body["outputs"][0]["data"] == ["hello"]
 
 
-def test_infer_unknown_model_returns_404(client: TestClient) -> None:
+async def test_infer_unknown_model_returns_404(app: FastAPI) -> None:
     payload = {
         "inputs": [{"name": "x", "shape": [1], "datatype": "BYTES", "data": ["y"]}]
     }
-    resp = client.post("/v2/models/wrong/infer", json=payload)
+    resp = await _client_post(app, "/v2/models/wrong/infer", payload)
     assert resp.status_code == 404
 
 
-def test_infer_without_id_omits_id_field(client: TestClient) -> None:
+async def test_infer_without_id_omits_id_field(app: FastAPI) -> None:
     payload = {
         "inputs": [{"name": "x", "shape": [1], "datatype": "FP32", "data": [1.0]}]
     }
-    resp = client.post("/v2/models/echo/infer", json=payload)
+    resp = await _client_post(app, "/v2/models/echo/infer", payload)
     assert resp.status_code == 200
     assert resp.json()["id"] is None
 
@@ -106,7 +126,7 @@ def test_infer_without_id_omits_id_field(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-class NotReadyStep(EchoStep):
+class NotReadyModelService(EchoModelService):
     @property
     def name(self) -> str:
         return "not-ready"
@@ -115,11 +135,10 @@ class NotReadyStep(EchoStep):
         return False
 
 
-def test_not_ready_step_returns_false() -> None:
-    app = NotReadyStep().build_app()
-    c = TestClient(app)
-    assert c.get("/v2/health/ready").json() == {"live": False}
-    assert c.get("/v2/models/not-ready/ready").json() == {
+async def test_not_ready_model_service_returns_false() -> None:
+    app = NotReadyModelService().build_app()
+    assert (await _client_get(app, "/v2/health/ready")).json() == {"live": False}
+    assert (await _client_get(app, "/v2/models/not-ready/ready")).json() == {
         "name": "not-ready",
         "ready": False,
     }
@@ -130,8 +149,8 @@ def test_not_ready_step_returns_false() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_model_metadata_returns_correct_response(client: TestClient) -> None:
-    resp = client.get("/v2/models/echo")
+async def test_model_metadata_returns_correct_response(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/models/echo")
     assert resp.status_code == 200
     body = resp.json()
     assert body["name"] == "echo"
@@ -143,6 +162,6 @@ def test_model_metadata_returns_correct_response(client: TestClient) -> None:
     assert body["outputs"] == []
 
 
-def test_model_metadata_unknown_model_returns_404(client: TestClient) -> None:
-    resp = client.get("/v2/models/unknown")
+async def test_model_metadata_unknown_model_returns_404(app: FastAPI) -> None:
+    resp = await _client_get(app, "/v2/models/unknown")
     assert resp.status_code == 404

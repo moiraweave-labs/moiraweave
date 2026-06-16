@@ -1,0 +1,96 @@
+workloads:
+  hermes:
+    enabled: true
+    type: agent-service
+    image: ghcr.io/nousresearch/hermes-agent:latest
+    deployment:
+      mode: managed
+      targets:
+        - local
+        - kubernetes
+      serviceName: hermes
+      replicas: 1
+    execution:
+      mode: session
+      timeoutSeconds: 172800
+    ports:
+      - name: http
+        port: 8642
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 15
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+    env:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_PORT: "8642"
+    secrets:
+      - HERMES_API_SERVER_KEY
+    persistence:
+      enabled: true
+      mountPath: /data
+    agent:
+      adapter: hermes
+      requiredSecrets:
+        - OPENAI_API_KEY
+      authTokenEnv: HERMES_API_SERVER_KEY
+      workspaceMount: /workspace
+  openclaw:
+    enabled: true
+    type: agent-service
+    image: ghcr.io/openclaw/openclaw:latest
+    deployment:
+      mode: managed
+      targets:
+        - local
+        - kubernetes
+      serviceName: openclaw
+      replicas: 1
+    execution:
+      mode: session
+      timeoutSeconds: 172800
+    ports:
+      - name: gateway
+        port: 18789
+    livenessProbe:
+      tcpSocket:
+        port: gateway
+      initialDelaySeconds: 15
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      tcpSocket:
+        port: gateway
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+    persistence:
+      enabled: true
+      mountPath: /workspace
+    agent:
+      adapter: openclaw
+      authTokenEnv: OPENCLAW_GATEWAY_TOKEN
+      agentId: main
+      workspaceMount: /workspace
+  external-hermes:
+    enabled: false
+    type: agent-service
+    endpoint: https://agents.example.com/hermes
+    deployment:
+      mode: external
+    agent:
+      adapter: hermes

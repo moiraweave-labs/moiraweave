@@ -1,7 +1,8 @@
 # KEDA ScaledObject — api-gateway
 #
 # Scales the api-gateway Deployment based on:
-#   1. HTTP request latency p95 (via Prometheus, requires kube-prometheus-stack F2-7)
+#   1. HTTP request latency p95.
+#      Requires kube-prometheus-stack F2-7.
 #   2. CPU utilisation as fallback
 #
 # Apply after both KEDA and moiraweave chart are installed:

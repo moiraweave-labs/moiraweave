@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: float = 10.0
     stale_run_seconds: float = 120.0
     stale_check_interval_seconds: float = 30.0
+    pending_reclaim_idle_seconds: float = 60.0
+    pending_reclaim_interval_seconds: float = 30.0
+    pending_reclaim_count: int = 10
+
+    # Recover from transient adapter/runtime errors without duplicating
+    # long-running work indefinitely.
+    run_retry_attempts: int = 3
+    run_retry_backoff_seconds: float = 1.0
 
 
 @lru_cache
