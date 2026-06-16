@@ -117,3 +117,14 @@ async def test_ready_latency_ms_present(client: AsyncClient) -> None:
     assert body["checks"]["redis"]["latency_ms"] >= 0
     assert body["checks"]["postgres"]["latency_ms"] >= 0
     assert body["checks"]["qdrant"]["latency_ms"] >= 0
+
+
+async def test_metrics_endpoint_exposes_http_counters(client: AsyncClient) -> None:
+    await client.get("/health")
+
+    response = await client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "moiraweave_api_http_requests_total" in response.text
+    assert 'path="/health"' in response.text
