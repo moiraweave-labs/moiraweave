@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fakeredis.aioredis import FakeRedis
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from moiraweave_shared.control_plane import InMemoryControlPlaneRepository
 from qdrant_client import AsyncQdrantClient
@@ -64,6 +65,11 @@ def _clear_settings_cache() -> Generator[None]:
 
 
 @pytest.fixture
+def api_app() -> FastAPI:
+    return app
+
+
+@pytest.fixture
 def fake_redis() -> FakeRedis:
     """In-memory Redis compatible with redis.asyncio."""
     return FakeRedis(decode_responses=True)
@@ -107,6 +113,7 @@ async def client(
     app.state.redis = fake_redis
     app.state.qdrant = mock_qdrant
     app.state.control_plane = control_plane
+    app.state.search_enabled = True
 
     try:
         async with AsyncClient(
@@ -115,7 +122,7 @@ async def client(
             yield ac
     finally:
         app.dependency_overrides.clear()
-        for attr in ("redis", "qdrant", "control_plane"):
+        for attr in ("redis", "qdrant", "control_plane", "search_enabled"):
             if hasattr(app.state, attr):
                 delattr(app.state, attr)
 

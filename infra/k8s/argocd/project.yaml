@@ -7,11 +7,11 @@ metadata:
     # Prevent deletion while Applications exist.
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: "MoiraWeave MLOps workloads — dev / staging / prod"
+  description: "MoiraWeave workloads - dev / staging / prod"
 
   # Allowed source repos.
   sourceRepos:
-    - https://github.com/jgallego9/moiraweave-mlops.git
+    - https://github.com/moiraweave-labs/moiraweave.git
 
   # Allowed destination clusters and namespaces.
   destinations:
@@ -22,7 +22,8 @@ spec:
     - server: https://kubernetes.default.svc
       namespace: moiraweave-prod
 
-  # Allowed cluster-scoped resource kinds (none needed beyond namespaced resources).
+  # Allowed cluster-scoped resource kinds.
+  # None needed beyond namespaced resources.
   clusterResourceWhitelist: []
 
   # All namespaced resources are allowed.

@@ -113,7 +113,8 @@ class ModelServiceExecutor:
             return None
         port = self._workload.spec.ports[0].port
         name = self._workload.metadata.name
-        return f"http://{name}:{port}/v2/models/{name}/infer"
+        service_name = self._workload.spec.deployment.serviceName or name
+        return f"http://{service_name}:{port}/v2/models/{name}/infer"
 
 
 class AgentExecutor:
