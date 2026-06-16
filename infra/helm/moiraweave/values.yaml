@@ -26,8 +26,8 @@ imageRegistry: ghcr.io/moiraweave-labs
 # ---------------------------------------------------------------------------
 apiGateway:
   image:
-    repository: ghcr.io/moiraweave-labs/moiraweave-core/api-gateway
-    tag: sha-64737dd
+    repository: ghcr.io/moiraweave-labs/moiraweave/api-gateway
+    tag: sha-dd08d2c
     pullPolicy: IfNotPresent
   replicaCount: 2
   service:
@@ -103,8 +103,8 @@ apiGateway:
 # ---------------------------------------------------------------------------
 worker:
   image:
-    repository: ghcr.io/moiraweave-labs/moiraweave-core/worker
-    tag: sha-64737dd
+    repository: ghcr.io/moiraweave-labs/moiraweave/worker
+    tag: sha-dd08d2c
     pullPolicy: IfNotPresent
   replicaCount: 1
   resources:
@@ -219,6 +219,45 @@ ui:
       cpu: 250m
       memory: 256Mi
 # ---------------------------------------------------------------------------
+# Optional Kubernetes deployment controller.
+#
+# The browser never receives kubeconfig. When enabled, this pod watches queued
+# deployment operations in the API and executes Helm/kubectl from inside the
+# cluster with namespace-scoped RBAC.
+# ---------------------------------------------------------------------------
+deploymentController:
+  enabled: false
+  image:
+    repository: ghcr.io/moiraweave-labs/moiraweave-cli
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  apiUrl: "" # defaults to the in-cluster api-gateway Service
+  target: kubernetes
+  env: dev
+  releaseName: moiraweave
+  chartRef: oci://ghcr.io/moiraweave-labs/charts/moiraweave
+  namespace: "" # defaults to .Release.Namespace
+  controllerId: "" # defaults to <release>-deployment-controller
+  limit: 5
+  pollIntervalSeconds: 5
+  auth:
+    existingSecret: moiraweave-controller-token
+    tokenKey: MOIRA_TOKEN
+  serviceAccount:
+    create: true
+    name: ""
+  rbac:
+    create: true
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+# ---------------------------------------------------------------------------
 # ServiceAccount
 # ---------------------------------------------------------------------------
 serviceAccount:
@@ -242,9 +281,14 @@ networkPolicy:
 modelsCache:
   size: 10Gi
   storageClass: "" # "" → cluster default StorageClass
-
 # ---------------------------------------------------------------------------
 # Generic AI workloads rendered from workload.yaml manifests.
 # Prefer using `moira deploy k8s` to generate this block.
+#
+# Managed workloads are rendered as in-namespace Deployments and Services.
+# Their Kubernetes Service name defaults to workload metadata.name so workers can
+# resolve the same runtime URL used in local Compose: http://<workload>:<port>.
+# External workloads are kept in the control plane only and must set
+# spec.endpoint in their workload manifest.
 # ---------------------------------------------------------------------------
 workloads: {}

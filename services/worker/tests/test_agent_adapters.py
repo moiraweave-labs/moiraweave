@@ -89,6 +89,34 @@ async def test_generic_agent_endpoint_round_trips_http(monkeypatch) -> None:
     assert captured["get"] == "http://agent:8000/health"
 
 
+async def test_generic_agent_uses_deployment_service_name(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def post(self, endpoint: str, *, json: dict[str, Any]) -> _FakeResponse:
+            captured["post"] = endpoint
+            return _FakeResponse({"accepted": True})
+
+    monkeypatch.setattr(agent_adapters.httpx, "AsyncClient", FakeAsyncClient)
+    adapter = HttpAgentAdapter(
+        _agent_workload(deployment={"serviceName": "agent-runtime"}),
+        timeout_seconds=1.0,
+    )
+
+    await adapter.send_message({"message": "hello"})
+
+    assert captured["post"] == "http://agent-runtime:8000"
+
+
 async def test_generic_agent_missing_optional_endpoints() -> None:
     adapter = HttpAgentAdapter(_agent_workload(ports=[]), timeout_seconds=1.0)
 

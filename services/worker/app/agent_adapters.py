@@ -556,7 +556,8 @@ def _base_endpoint(workload: WorkloadDefinition) -> str | None:
     if not workload.spec.ports:
         return None
     port = workload.spec.ports[0].port
-    return f"http://{workload.metadata.name}:{port}"
+    service_name = workload.spec.deployment.serviceName or workload.metadata.name
+    return f"http://{service_name}:{port}"
 
 
 def _join_url(base: str | None, path: str) -> str:

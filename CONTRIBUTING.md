@@ -8,7 +8,7 @@ Thanks for contributing to MoiraWeave MLOps.
 2. Create a branch from `main` using one of these prefixes:
    - `feat/<short-topic>`
    - `fix/<short-topic>`
-   - `step/<task-impl>`
+   - `workload/<short-topic>`
 3. Implement the change with focused commits.
 4. Run checks locally:
 
@@ -48,10 +48,10 @@ uv run pre-commit run --all-files
 - Update docs for user-facing changes.
 - Link the issue being solved.
 
-## Adding a new step
+## Adding workload capabilities
 
-1. Add task schema in `tasks/<task>/schema.json`.
-2. Add step package in `steps/<task>-<impl>/`.
-3. Add tests in `steps/<task>-<impl>/tests/`.
-4. Add or update `VERSION`.
+1. Add or update workload schema support in the API gateway.
+2. Add worker execution or adapter logic for the workload type.
+3. Add sample manifests under the workload examples used by tests/docs.
+4. Cover API, worker, and deployment behavior with focused tests.
 5. Validate with `make ci`.

@@ -61,6 +61,20 @@ async def test_model_executor_without_endpoint_returns_mock_response() -> None:
     assert result == {"workload": "model", "result": {"text": "hello"}}
 
 
+def test_model_executor_uses_deployment_service_name() -> None:
+    workload = _workload(
+        "model",
+        "model-service",
+        ports=[{"name": "http", "port": 8080}],
+        deployment={"serviceName": "model-runtime"},
+    )
+
+    assert (
+        ModelServiceExecutor(workload)._endpoint()
+        == "http://model-runtime:8080/v2/models/model/infer"
+    )
+
+
 async def test_workload_executor_cancels_before_dispatch() -> None:
     workload = _workload("model", "model-service")
 

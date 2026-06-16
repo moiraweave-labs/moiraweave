@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from qdrant_client.http.exceptions import UnexpectedResponse
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
@@ -31,6 +31,12 @@ async def search(
     ``user`` field. The ``collection`` field in the request body determines which
     Qdrant collection is queried.
     """
+    if not getattr(request.app.state, "search_enabled", True):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Semantic search is disabled because EMBEDDING_MODEL is empty.",
+        )
+
     query_filter = Filter(
         must=[
             FieldCondition(

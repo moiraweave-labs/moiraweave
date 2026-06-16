@@ -1,0 +1,50 @@
+apiVersion: moiraweave.io/v1alpha1
+kind: Workload
+metadata:
+  name: external-hermes
+  labels:
+    moiraweave.io/template: external-agent
+    moiraweave.io/runtime: hermes-agent
+  annotations:
+    moiraweave.io/tool-ownership: runtime
+spec:
+  type: agent-service
+  deployment:
+    mode: external
+  endpoint: https://agents.example.com/hermes
+  execution:
+    mode: session
+    timeoutSeconds: 172800
+  agent:
+    adapter: hermes
+    toolOwnership: runtime
+    authTokenEnv: HERMES_API_SERVER_KEY
+    workspaceMount: /workspace
+    exposedChannels:
+      - ui
+      - api
+    externalOwnedChannels:
+      - telegram
+    capabilities:
+      - chat
+      - tools
+      - long-running
+    runtimeRequirements:
+      filesystem:
+        persistentWorkspace: true
+        workspaceMount: /workspace
+      network:
+        egress: enabled
+      webSearch:
+        enabled: true
+      browser:
+        mode: runtime-managed
+      terminal:
+        mode: runtime-managed
+        approval: runtime
+      mcp:
+        enabled: true
+      messaging:
+        enabled: true
+    dispatchTimeoutSeconds: 10
+    pollIntervalSeconds: 2
