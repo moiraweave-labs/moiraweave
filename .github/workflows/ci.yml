@@ -354,6 +354,8 @@ jobs:
     # Run on every push/PR to main so regressions are caught early.
     permissions:
       contents: read
+    env:
+      E2E_TEST_JWT_SECRET: ${{ secrets.E2E_JWT_SECRET_KEY || 'e2e-local-test-secret-not-for-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -371,7 +373,7 @@ jobs:
 
       - name: Build mock-model image
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -380,8 +382,8 @@ jobs:
 
       - name: Start E2E stack (wait for healthchecks)
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
-          E2E_JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
+          E2E_JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -391,7 +393,7 @@ jobs:
       - name: Run E2E tests
         env:
           E2E_BASE_URL: http://localhost:8000
-          E2E_JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          E2E_JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           uv run pytest tests/e2e/ -v --no-cov --import-mode=importlib \
             --tb=short
@@ -399,7 +401,7 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -409,7 +411,7 @@ jobs:
       - name: Tear down stack (always)
         if: always()
         env:
-          JWT_SECRET_KEY: ${{ secrets.E2E_JWT_SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ env.E2E_TEST_JWT_SECRET }}
         run: |
           docker compose \
             -f docker-compose.yml \
