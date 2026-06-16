@@ -298,6 +298,10 @@ jobs:
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo add qdrant-helm https://qdrant.github.io/qdrant-helm
           helm dependency build infra/helm/moiraweave
+          shopt -s nullglob
+          for chart in infra/helm/moiraweave/charts/*.tgz; do
+            tar -xzf "$chart" -C infra/helm/moiraweave/charts
+          done
 
       - name: Log in to GHCR Helm registry
         shell: bash
