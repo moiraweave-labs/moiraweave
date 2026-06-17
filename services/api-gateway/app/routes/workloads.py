@@ -2203,15 +2203,29 @@ async def list_secret_inventory(
     current_user: AdminUser,
     workload_name: str | None = None,
 ) -> SecretInventoryResponse:
-    del current_user
     settings = get_settings()
     workloads = await _all_workloads(control_plane, settings)
     if workload_name:
         workload = workloads.get(workload_name)
         if workload is None:
             raise HTTPException(status_code=404, detail="Workload not found")
-        return _secret_inventory_response([workload])
-    return _secret_inventory_response(list(workloads.values()))
+        inventory = _secret_inventory_response([workload])
+    else:
+        inventory = _secret_inventory_response(list(workloads.values()))
+    await _audit(
+        control_plane,
+        current_user,
+        "secret_inventory.read",
+        "secret_inventory",
+        workload_name or "all",
+        metadata={
+            "workload_name": workload_name,
+            "secret_names": [item.name for item in inventory.secrets],
+            "missing": inventory.missing,
+            "total": inventory.total,
+        },
+    )
+    return inventory
 
 
 @router.post(

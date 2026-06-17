@@ -1198,6 +1198,14 @@ async def test_secret_inventory_lists_required_names_without_values(
     assert (
         "hermes:spec.agent.authTokenEnv" in items["HERMES_API_SERVER_KEY"]["references"]
     )
+    audit = await auth_client.get("/v1/audit-events?action=secret_inventory.read")
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == "hermes"
+    assert audit.json()[0]["metadata"]["secret_names"] == [
+        "HERMES_API_SERVER_KEY",
+        "OPENAI_API_KEY",
+    ]
+    assert "sk-never-return-this" not in str(audit.json()[0]["metadata"])
 
 
 async def test_secret_inventory_includes_runtime_requirement_secrets(
