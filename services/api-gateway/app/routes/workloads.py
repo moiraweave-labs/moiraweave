@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import mimetypes
 import os
 import re
 from collections.abc import AsyncGenerator  # noqa: TC003
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -43,6 +45,7 @@ from app.dependencies.auth import AdminUser, CurrentUser, OperatorUser  # noqa: 
 from app.dependencies.control_plane import ControlPlane  # noqa: TC001
 from app.dependencies.redis import RedisClient  # noqa: TC001
 from app.middleware.rate_limit import limiter
+from app.models.auth import TokenData
 from app.models.workloads import (
     AgentMessageHistoryItem,
     AgentMessageRequest,
@@ -1208,6 +1211,35 @@ def _validate_agent_channel(workload: WorkloadDefinition, channel: str) -> str:
             ),
         )
     return normalized
+
+
+def _verify_webhook_signature(
+    settings: Settings,
+    signature: str | None,
+    body: bytes,
+) -> None:
+    secret = settings.webhook_signing_secret
+    if secret is None or not secret.get_secret_value():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Webhook signing secret is not configured",
+        )
+    if not signature:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing webhook signature",
+        )
+    expected = hmac.new(
+        secret.get_secret_value().encode(),
+        body,
+        sha256,
+    ).hexdigest()
+    expected_header = f"sha256={expected}"
+    if not hmac.compare_digest(signature, expected_header):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook signature",
+        )
 
 
 def _deployment_probe_url(endpoint: str) -> str:
@@ -3470,11 +3502,6 @@ async def post_agent_message(
     response_model=AgentMessageResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-@router.post(
-    "/webhooks/{channel}/agents/{name}/messages",
-    response_model=AgentMessageResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
 async def post_channel_agent_message(
     channel: str,
     name: str,
@@ -3566,6 +3593,37 @@ async def post_channel_agent_message(
         session_id=session_id,
         status=run.status,
         created_at=message.created_at,
+    )
+
+
+@router.post(
+    "/webhooks/{channel}/agents/{name}/messages",
+    response_model=AgentMessageResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def post_signed_webhook_agent_message(
+    channel: str,
+    name: str,
+    body: ChannelMessageRequest,
+    request: Request,
+    redis: RedisClient,
+    control_plane: ControlPlane,
+) -> AgentMessageResponse:
+    settings = get_settings()
+    raw_body = await request.body()
+    _verify_webhook_signature(
+        settings,
+        request.headers.get("x-moiraweave-signature"),
+        raw_body,
+    )
+    webhook_user = TokenData(subject=f"webhook:{channel.strip().lower()}", role="operator")
+    return await post_channel_agent_message(
+        channel,
+        name,
+        body,
+        redis,
+        control_plane,
+        webhook_user,
     )
 
 

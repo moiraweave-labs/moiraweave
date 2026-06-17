@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     workloads_dir: str = "workloads"
     artifacts_dir: str = "artifacts"
 
+    # Inbound webhook connector. External channels sign their raw request body
+    # with HMAC-SHA256 and send it as X-Moiraweave-Signature: sha256=<hex>.
+    webhook_signing_secret: SecretStr | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

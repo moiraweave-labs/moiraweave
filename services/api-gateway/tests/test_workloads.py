@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
@@ -1513,17 +1515,26 @@ async def test_channel_message_creates_session_run_and_audit_record(
 async def test_webhook_message_uses_channel_contract(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "webhook-test-secret")
     manifest = _agent_manifest()
     manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
     assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
 
+    payload = {
+        "external_user_id": "webhook-sender",
+        "message": "run diagnostics",
+        "metadata": {"source": "incident-webhook"},
+    }
+    raw_payload = json.dumps(payload).encode()
+    signature = hmac.new(b"webhook-test-secret", raw_payload, sha256).hexdigest()
     resp = await auth_client.post(
         "/v1/webhooks/webhook/agents/hermes/messages",
-        json={
-            "external_user_id": "webhook-sender",
-            "message": "run diagnostics",
-            "metadata": {"source": "incident-webhook"},
+        content=raw_payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={signature}",
         },
     )
 
@@ -1534,6 +1545,25 @@ async def test_webhook_message_uses_channel_contract(
     assert run.session_id == body["session_id"]
     assert control_plane.channel_messages[0].channel == "webhook"
     assert control_plane.channel_messages[0].metadata["source"] == "incident-webhook"
+    assert control_plane.channel_messages[0].user == "webhook:webhook"
+
+
+async def test_webhook_message_rejects_invalid_signature(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "webhook-test-secret")
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
+    assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
+
+    resp = await auth_client.post(
+        "/v1/webhooks/webhook/agents/hermes/messages",
+        json={"external_user_id": "sender", "message": "hello"},
+        headers={"X-MoiraWeave-Signature": "sha256=bad"},
+    )
+
+    assert resp.status_code == 401
 
 
 async def test_duplicate_agent_messages_keep_distinct_run_links(
