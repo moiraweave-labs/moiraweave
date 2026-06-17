@@ -16,6 +16,9 @@
 
 apiGateway:
   replicaCount: 2
+  extraEnv:
+    - name: DEMO_AUTH_ENABLED
+      value: "false"
   image:
     pullPolicy: IfNotPresent
   hpa:

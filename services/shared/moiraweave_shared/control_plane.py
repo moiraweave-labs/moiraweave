@@ -781,6 +781,10 @@ class ControlPlaneRepository(Protocol):
         self, *, team_id: str | None = None, subject: str | None = None
     ) -> list[StoredTeamMember]: ...
 
+    async def remove_team_member(
+        self, team_id: str, subject: str
+    ) -> StoredTeamMember | None: ...
+
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
     ) -> list[StoredRun]: ...
@@ -1416,6 +1420,11 @@ class InMemoryControlPlaneRepository:
             and (subject is None or item.subject == subject)
         ]
         return sorted(members, key=lambda item: item.created_at, reverse=True)
+
+    async def remove_team_member(
+        self, team_id: str, subject: str
+    ) -> StoredTeamMember | None:
+        return self.team_members.pop((team_id, subject), None)
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES
@@ -2418,6 +2427,22 @@ class PostgresControlPlaneRepository:
             subject,
         )
         return [_team_member_from_row(row) for row in rows]
+
+    async def remove_team_member(
+        self, team_id: str, subject: str
+    ) -> StoredTeamMember | None:
+        row = await self.pool.fetchrow(
+            """
+            DELETE FROM team_members
+            WHERE team_id = $1 AND subject = $2
+            RETURNING team_id, subject, role, created_by, created_at
+            """,
+            team_id,
+            subject,
+        )
+        if row is None:
+            return None
+        return _team_member_from_row(row)
 
     async def find_stale_runs(
         self, *, before: str, statuses: Iterable[str] = HEARTBEAT_RUN_STATUSES

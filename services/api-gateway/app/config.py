@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     # CORS — override with a comma-separated list via CORS_ORIGINS env var
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 
-    # Demo auth credentials — override via DEMO_USERNAME / DEMO_PASSWORD env vars.
-    # Replace with a database-backed user store for production.
+    # Demo auth credentials — intended for local/dev bootstrap only.
+    # Disable with DEMO_AUTH_ENABLED=false in staging and production.
+    demo_auth_enabled: bool = True
     demo_username: str = "admin"
     demo_password: SecretStr = SecretStr("demo-password")
     demo_role: Literal["admin", "operator", "viewer"] = "admin"

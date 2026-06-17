@@ -48,8 +48,10 @@ Use the CLI instead. The fastest local path is:
 when there are no workloads, starts API, worker, Postgres, Redis, Qdrant, UI,
 and workload services, then registers deployment records.
 
-Local development auth uses `DEMO_USERNAME`, `DEMO_PASSWORD`, and `DEMO_ROLE`
-as a bootstrap path. Admins can also create persistent users, teams, team
+Local development auth uses `DEMO_AUTH_ENABLED=true`, `DEMO_USERNAME`,
+`DEMO_PASSWORD`, and `DEMO_ROLE` as a bootstrap path. Staging and production
+overlays set `DEMO_AUTH_ENABLED=false`; use persistent users there. Admins can
+also create persistent users, teams, team
 memberships, and hashed API keys through `/auth/users`, `/auth/teams`, and
 `/auth/api-keys`. API key secrets are returned once; metadata, team scope,
 last-use timestamps, and revocation state stay in Postgres and lifecycle changes

@@ -58,6 +58,37 @@ async def test_login_missing_body_returns_422(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+async def test_demo_auth_can_be_disabled_without_blocking_stored_users(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
+    admin_token = _token("admin", "admin")
+
+    demo = await client.post(
+        "/auth/token", json={"username": "admin", "password": "demo-password"}
+    )
+    assert demo.status_code == 401
+
+    await client.post(
+        "/auth/users",
+        json={
+            "subject": "alice",
+            "password": "correct-horse",
+            "role": "operator",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    stored = await client.post(
+        "/auth/token", json={"username": "alice", "password": "correct-horse"}
+    )
+
+    assert stored.status_code == 200
+    assert stored.json()["subject"] == "alice"
+    get_settings.cache_clear()
+
+
 async def test_token_allows_authenticated_request(client: AsyncClient) -> None:
     # Given: a valid token obtained from the login endpoint
     login = await client.post(
@@ -384,6 +415,28 @@ async def test_admin_can_manage_team_and_team_scoped_api_key(
     assert profile.json()["subject"] == "team-bot"
     assert profile.json()["team_id"] == "agents"
     assert profile.json()["teams"] == ["agents"]
+
+    removed = await client.delete(
+        "/auth/teams/agents/members/team-bot",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    listed = await client.get(
+        "/auth/teams/agents/members",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert removed.status_code == 200
+    assert removed.json()["subject"] == "team-bot"
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+    audit = await client.get(
+        "/v1/audit-events?action=team.member.remove",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == "agents"
+    assert audit.json()[0]["metadata"]["subject"] == "team-bot"
 
 
 async def test_viewer_cannot_register_workload(client: AsyncClient) -> None:

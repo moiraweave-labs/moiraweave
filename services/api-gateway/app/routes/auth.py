@@ -210,7 +210,7 @@ async def login(
 
     Rate-limited to 10 requests/minute per IP to mitigate brute-force attacks.
     Override ``DEMO_USERNAME`` and ``DEMO_PASSWORD`` via environment variables.
-    Replace with a database-backed user store for production.
+    Disable demo login with ``DEMO_AUTH_ENABLED=false`` outside local/dev.
     """
     del request
     settings = get_settings()
@@ -226,8 +226,10 @@ async def login(
             role=user.role,
         )
 
-    if body.username == settings.demo_username and _verify_password(
-        body.password, settings.demo_password.get_secret_value()
+    if (
+        settings.demo_auth_enabled
+        and body.username == settings.demo_username
+        and _verify_password(body.password, settings.demo_password.get_secret_value())
     ):
         return Token(
             access_token=_create_access_token(
@@ -556,6 +558,31 @@ async def add_team_member(
     await control_plane.record_audit_event(
         current_user.subject,
         "team.member.upsert",
+        "team",
+        team_id,
+        metadata={"subject": member.subject, "role": member.role},
+        timestamp=utc_now_iso(),
+    )
+    return _team_member_response(member)
+
+
+@router.delete(
+    "/teams/{team_id}/members/{subject}",
+    response_model=TeamMemberResponse,
+    summary="Remove team member",
+)
+async def remove_team_member(
+    team_id: str,
+    subject: str,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> TeamMemberResponse:
+    member = await control_plane.remove_team_member(team_id, subject)
+    if member is None:
+        raise HTTPException(status_code=404, detail="Team member not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "team.member.remove",
         "team",
         team_id,
         metadata={"subject": member.subject, "role": member.role},

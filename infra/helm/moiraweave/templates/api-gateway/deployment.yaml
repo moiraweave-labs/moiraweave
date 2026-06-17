@@ -29,6 +29,10 @@ spec:
           env:
             # --- sourced from values (list, stable order) ---
             {{- toYaml .Values.apiGateway.env | nindent 12 }}
+            {{- with .Values.apiGateway.extraEnv }}
+            # --- sourced from environment overlays ---
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             # --- internal service URLs derived from release name ---
             - name: REDIS_URL
               value: {{ include "moiraweave.redisUrl" . | quote }}

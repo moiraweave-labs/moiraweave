@@ -68,6 +68,9 @@ apiGateway:
       value: "false"
     - name: OTEL_OTLP_ENDPOINT
       value: http://jaeger-collector:4318
+  # Additional non-secret env vars. Use this from overlays so the base env list
+  # is not replaced by Helm's list-merge semantics.
+  extraEnv: []
   # Reference to a pre-existing K8s Secret that contains JWT_SECRET_KEY.
   # Create it once with:
   #   kubectl create secret generic moiraweave-secrets \
