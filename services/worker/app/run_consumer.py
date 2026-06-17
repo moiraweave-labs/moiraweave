@@ -26,6 +26,12 @@ from pydantic import ValidationError
 from redis.exceptions import ResponseError
 
 from app.agent_adapters import extract_assistant_message
+from app.metrics import (
+    record_dead_letter,
+    record_pending_reclaim,
+    record_run_retry,
+    record_stale_run_lost,
+)
 from app.workload_executor import RunCancelledError, WorkloadExecutor
 
 if TYPE_CHECKING:
@@ -126,6 +132,7 @@ async def _dead_letter(
         },
     )
     await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+    record_dead_letter(reason)
 
 
 async def _load_workload_map(
@@ -209,6 +216,7 @@ async def _execute_with_retries(
                     "error": str(exc),
                 },
             )
+            record_run_retry(workload.metadata.name)
             if backoff_seconds > 0:
                 await asyncio.sleep(backoff_seconds * (2 ** (attempt - 1)))
             if await is_cancel_requested():
@@ -262,6 +270,7 @@ async def mark_stale_runs(
                 "Run marked lost after stale heartbeat",
                 data={"age_seconds": age},
             )
+            record_stale_run_lost()
 
 
 async def reclaim_pending_runs(
@@ -309,6 +318,7 @@ async def reclaim_pending_runs(
         messages: Any = await redis.xrange(RUN_STREAM, min=msg_id, max=msg_id, count=1)
         if not messages:
             await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+            record_pending_reclaim("missing_message_ack")
             reclaimed += 1
             continue
         _message_id, fields = messages[0]
@@ -318,19 +328,23 @@ async def reclaim_pending_runs(
             msg = RunMessage.model_validate(fields)
         except ValidationError:
             await _dead_letter(redis, msg_id, fields, reason="invalid_run_message")
+            record_pending_reclaim("dead_letter_invalid_message")
             reclaimed += 1
             continue
 
         run = await control_plane.get_run(msg.run_id)
         if run is None:
             await _dead_letter(redis, msg_id, fields, reason="run_not_found")
+            record_pending_reclaim("dead_letter_run_not_found")
             reclaimed += 1
             continue
         if run.status in TERMINAL_RUN_STATUSES:
             await redis.xack(RUN_STREAM, CONSUMER_GROUP, msg_id)
+            record_pending_reclaim("terminal_ack")
             reclaimed += 1
             continue
         if run.status not in RECOVERABLE_PENDING_RUN_STATUSES:
+            record_pending_reclaim("active_skip")
             logger.debug(
                 "run_pending_reclaim_skip_active run_id=%s status=%s",
                 msg.run_id,
@@ -364,6 +378,7 @@ async def reclaim_pending_runs(
             run_retry_attempts=run_retry_attempts,
             run_retry_backoff_seconds=run_retry_backoff_seconds,
         )
+        record_pending_reclaim("claimed")
         reclaimed += 1
 
     return reclaimed

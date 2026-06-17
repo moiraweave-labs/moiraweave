@@ -16,6 +16,7 @@ from moiraweave_shared.schemas import RunMessage
 from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
 from moiraweave_shared.workloads import WorkloadDefinition
 
+import app.run_consumer as run_consumer_module
 from app.agent_adapters import HttpAgentAdapter
 from app.run_consumer import (
     _ensure_consumer_group,
@@ -138,6 +139,7 @@ async def test_process_message_retries_transient_executor_failure(
     monkeypatch,
 ) -> None:
     calls = 0
+    retries: list[str] = []
 
     async def flaky_send_message(
         self: HttpAgentAdapter, payload: dict[str, Any]
@@ -150,6 +152,7 @@ async def test_process_message_retries_transient_executor_failure(
         return {"response": "ok"}
 
     monkeypatch.setattr(HttpAgentAdapter, "send_message", flaky_send_message)
+    monkeypatch.setattr(run_consumer_module, "record_run_retry", retries.append)
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
     workload = _agent_workload()
@@ -185,6 +188,7 @@ async def test_process_message_retries_transient_executor_failure(
     assert calls == 2
     assert run is not None
     assert run.status == "succeeded"
+    assert retries == ["agent"]
     assert any(event.type == "run.retry" for event in events)
     assert any(event.type == "run.retrying" for event in events)
 
@@ -228,8 +232,15 @@ async def test_active_duplicate_message_is_acknowledged_without_reexecution(
 
 
 async def test_invalid_run_message_goes_to_dead_letter(
-    fake_redis: Any, tmp_path
+    fake_redis: Any, tmp_path, monkeypatch
 ) -> None:
+    recorded_dead_letters: list[str] = []
+
+    monkeypatch.setattr(
+        run_consumer_module,
+        "record_dead_letter",
+        recorded_dead_letters.append,
+    )
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
 
@@ -245,6 +256,7 @@ async def test_invalid_run_message_goes_to_dead_letter(
     dead_letters = await fake_redis.xrange(DEAD_LETTER_STREAM)
     assert len(dead_letters) == 1
     assert dead_letters[0][1]["reason"] == "invalid_run_message"
+    assert recorded_dead_letters == ["invalid_run_message"]
 
 
 async def test_invalid_payload_fails_run(fake_redis: Any, tmp_path) -> None:
@@ -347,7 +359,14 @@ async def test_cancel_requested_run_is_canceled_before_execution(
     assert run.status == "canceled"
 
 
-async def test_mark_stale_runs_marks_active_run_lost() -> None:
+async def test_mark_stale_runs_marks_active_run_lost(monkeypatch) -> None:
+    stale_lost = 0
+
+    def record_lost() -> None:
+        nonlocal stale_lost
+        stale_lost += 1
+
+    monkeypatch.setattr(run_consumer_module, "record_stale_run_lost", record_lost)
     control_plane = InMemoryControlPlaneRepository()
     old_heartbeat = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
     await control_plane.create_run(
@@ -376,6 +395,7 @@ async def test_mark_stale_runs_marks_active_run_lost() -> None:
     assert "Heartbeat stale" in run.error
     assert run.completed_at is not None
     assert events[-1].type == "run.lost"
+    assert stale_lost == 1
 
 
 async def test_mark_stale_runs_ignores_recent_and_terminal_runs() -> None:
@@ -467,6 +487,8 @@ async def test_reclaim_pending_runs_processes_queued_run(
     tmp_path,
     monkeypatch,
 ) -> None:
+    reclaim_outcomes: list[str] = []
+
     async def fake_send_message(
         self: HttpAgentAdapter, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -474,6 +496,9 @@ async def test_reclaim_pending_runs_processes_queued_run(
         return {"response": "reclaimed", "adapter": self.name}
 
     monkeypatch.setattr(HttpAgentAdapter, "send_message", fake_send_message)
+    monkeypatch.setattr(
+        run_consumer_module, "record_pending_reclaim", reclaim_outcomes.append
+    )
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
     workload = _agent_workload()
@@ -516,6 +541,7 @@ async def test_reclaim_pending_runs_processes_queued_run(
     assert reclaimed == 1
     assert run is not None
     assert run.status == "succeeded"
+    assert reclaim_outcomes == ["claimed"]
     assert pending["pending"] == 0
 
 
@@ -588,7 +614,13 @@ async def test_reclaim_pending_runs_uses_retry_configuration(
 async def test_reclaim_pending_runs_skips_active_heartbeating_run(
     fake_redis: Any,
     tmp_path,
+    monkeypatch,
 ) -> None:
+    reclaim_outcomes: list[str] = []
+
+    monkeypatch.setattr(
+        run_consumer_module, "record_pending_reclaim", reclaim_outcomes.append
+    )
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
     await control_plane.create_run(
@@ -634,6 +666,7 @@ async def test_reclaim_pending_runs_skips_active_heartbeating_run(
     pending = await fake_redis.xpending(RUN_STREAM, CONSUMER_GROUP)
 
     assert reclaimed == 0
+    assert reclaim_outcomes == ["active_skip"]
     assert pending["pending"] == 1
     assert pending["consumers"][0]["name"] == "old-worker"
 
@@ -641,7 +674,13 @@ async def test_reclaim_pending_runs_skips_active_heartbeating_run(
 async def test_reclaim_pending_runs_acks_terminal_run(
     fake_redis: Any,
     tmp_path,
+    monkeypatch,
 ) -> None:
+    reclaim_outcomes: list[str] = []
+
+    monkeypatch.setattr(
+        run_consumer_module, "record_pending_reclaim", reclaim_outcomes.append
+    )
     await _ensure_consumer_group(fake_redis)
     control_plane = InMemoryControlPlaneRepository()
     completed_at = utc_now_iso()
@@ -687,4 +726,5 @@ async def test_reclaim_pending_runs_acks_terminal_run(
     pending = await fake_redis.xpending(RUN_STREAM, CONSUMER_GROUP)
 
     assert reclaimed == 1
+    assert reclaim_outcomes == ["terminal_ack"]
     assert pending["pending"] == 0
