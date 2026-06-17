@@ -8,8 +8,10 @@ from moiraweave_shared.control_plane import (
     utc_now_iso,
 )
 from moiraweave_shared.workloads import (
+    DeploymentOperationStateTransitionError,
     RunStateTransitionError,
     WorkloadDefinition,
+    ensure_deployment_operation_transition,
     ensure_run_transition,
 )
 
@@ -115,6 +117,15 @@ def test_run_state_transition_policy() -> None:
         ensure_run_transition("succeeded", "running")
 
 
+def test_deployment_operation_state_transition_policy() -> None:
+    ensure_deployment_operation_transition("queued", "running")
+    ensure_deployment_operation_transition("running", "running")
+    ensure_deployment_operation_transition("running", "succeeded")
+
+    with pytest.raises(DeploymentOperationStateTransitionError):
+        ensure_deployment_operation_transition("succeeded", "running")
+
+
 async def test_control_plane_enforces_run_state_transition_policy() -> None:
     control_plane = InMemoryControlPlaneRepository()
     await control_plane.create_run(
@@ -134,3 +145,34 @@ async def test_control_plane_enforces_run_state_transition_policy() -> None:
 
     with pytest.raises(RunStateTransitionError):
         await control_plane.update_run("run-state-machine", status="running")
+
+
+async def test_control_plane_enforces_deployment_operation_transition_policy() -> None:
+    control_plane = InMemoryControlPlaneRepository()
+    await control_plane.create_deployment_operation(
+        "00000000-0000-0000-0000-000000000001",
+        "apply",
+        "agent",
+        "kubernetes",
+        "queued",
+        "user",
+        now=utc_now_iso(),
+    )
+
+    await control_plane.update_deployment_operation(
+        "00000000-0000-0000-0000-000000000001",
+        status="running",
+        metadata={},
+    )
+    await control_plane.update_deployment_operation(
+        "00000000-0000-0000-0000-000000000001",
+        status="succeeded",
+        metadata={},
+    )
+
+    with pytest.raises(DeploymentOperationStateTransitionError):
+        await control_plane.update_deployment_operation(
+            "00000000-0000-0000-0000-000000000001",
+            status="running",
+            metadata={},
+        )

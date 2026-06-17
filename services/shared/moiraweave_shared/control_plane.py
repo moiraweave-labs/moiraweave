@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from moiraweave_shared.workloads import WorkloadDefinition, ensure_run_transition
+from moiraweave_shared.workloads import (
+    WorkloadDefinition,
+    ensure_deployment_operation_transition,
+    ensure_run_transition,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -1217,6 +1221,7 @@ class InMemoryControlPlaneRepository:
         stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
         operation = self.deployment_operations[operation_id]
+        ensure_deployment_operation_transition(operation.status, status)
         updated = operation.model_copy(
             update={
                 "status": status,
@@ -2196,6 +2201,10 @@ class PostgresControlPlaneRepository:
         stdout_summary: str | None = None,
         stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
+        existing = await self.get_deployment_operation(operation_id)
+        if existing is None:
+            raise KeyError(operation_id)
+        ensure_deployment_operation_transition(existing.status, status)
         row = await self.pool.fetchrow(
             """
             UPDATE deployment_operations

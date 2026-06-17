@@ -42,6 +42,13 @@ RunStatus = Literal[
     "canceled",
     "lost",
 ]
+DeploymentOperationStatus = Literal[
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "canceled",
+]
 
 TERMINAL_RUN_STATUSES: set[str] = {"succeeded", "failed", "canceled", "lost"}
 ACTIVE_RUN_STATUSES: set[str] = {
@@ -86,9 +93,21 @@ VALID_RUN_TRANSITIONS: dict[str, set[str]] = {
     "lost": set(),
 }
 
+VALID_DEPLOYMENT_OPERATION_TRANSITIONS: dict[str, set[str]] = {
+    "queued": {"running", "succeeded", "failed", "canceled"},
+    "running": {"running", "succeeded", "failed", "canceled"},
+    "succeeded": set(),
+    "failed": set(),
+    "canceled": set(),
+}
+
 
 class RunStateTransitionError(ValueError):
     """Raised when a run attempts an invalid lifecycle transition."""
+
+
+class DeploymentOperationStateTransitionError(ValueError):
+    """Raised when a deployment operation attempts an invalid transition."""
 
 
 def is_valid_run_transition(current: str, target: str) -> bool:
@@ -103,6 +122,23 @@ def ensure_run_transition(current: str, target: str) -> None:
     if not is_valid_run_transition(current, target):
         raise RunStateTransitionError(
             f"Invalid run state transition: {current!r} -> {target!r}"
+        )
+
+
+def is_valid_deployment_operation_transition(current: str, target: str) -> bool:
+    """Return whether a deployment operation can move between states."""
+
+    return current == target or target in VALID_DEPLOYMENT_OPERATION_TRANSITIONS.get(
+        current, set()
+    )
+
+
+def ensure_deployment_operation_transition(current: str, target: str) -> None:
+    """Validate a deployment operation lifecycle transition."""
+
+    if not is_valid_deployment_operation_transition(current, target):
+        raise DeploymentOperationStateTransitionError(
+            f"Invalid deployment operation state transition: {current!r} -> {target!r}"
         )
 
 
@@ -247,13 +283,21 @@ class AgentRuntimeRequirements(BaseModel):
     filesystem: RuntimeFilesystemRequirement = Field(
         default_factory=RuntimeFilesystemRequirement
     )
-    network: RuntimeNetworkRequirement = Field(default_factory=RuntimeNetworkRequirement)
+    network: RuntimeNetworkRequirement = Field(
+        default_factory=RuntimeNetworkRequirement
+    )
     webSearch: RuntimeCapabilityRequirement = Field(
         default_factory=RuntimeCapabilityRequirement
     )
-    browser: RuntimeBrowserRequirement = Field(default_factory=RuntimeBrowserRequirement)
-    terminal: RuntimeTerminalRequirement = Field(default_factory=RuntimeTerminalRequirement)
-    mcp: RuntimeCapabilityRequirement = Field(default_factory=RuntimeCapabilityRequirement)
+    browser: RuntimeBrowserRequirement = Field(
+        default_factory=RuntimeBrowserRequirement
+    )
+    terminal: RuntimeTerminalRequirement = Field(
+        default_factory=RuntimeTerminalRequirement
+    )
+    mcp: RuntimeCapabilityRequirement = Field(
+        default_factory=RuntimeCapabilityRequirement
+    )
     messaging: RuntimeCapabilityRequirement = Field(
         default_factory=RuntimeCapabilityRequirement
     )
