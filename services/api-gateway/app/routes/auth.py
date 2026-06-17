@@ -22,14 +22,19 @@ from app.models.auth import (
     ApiKeyCreateResponse,
     ApiKeyResponse,
     AuthProfile,
+    BootstrapAdminRequest,
     LoginRequest,
     TeamCreateRequest,
     TeamMemberRequest,
     TeamMemberResponse,
     TeamResponse,
+    TeamUpdateRequest,
     Token,
     UserCreateRequest,
+    UserPasswordChangeRequest,
+    UserPasswordResetRequest,
     UserResponse,
+    UserUpdateRequest,
 )
 
 router = APIRouter(tags=["auth"])
@@ -153,6 +158,13 @@ async def _find_team(control_plane: ControlPlane, team_id: str) -> StoredTeam | 
     )
 
 
+async def _has_active_admin(control_plane: ControlPlane) -> bool:
+    return any(
+        user.role == "admin" and user.disabled_at is None
+        for user in await control_plane.list_users()
+    )
+
+
 async def _store_api_key(
     control_plane: ControlPlane,
     *,
@@ -187,15 +199,71 @@ async def _audit_auth(
     action: str,
     resource_id: str,
     *,
+    resource_type: str = "api_key",
     metadata: dict[str, object] | None = None,
 ) -> None:
     await control_plane.record_audit_event(
         actor,
         action,
-        "api_key",
+        resource_type,
         resource_id,
         metadata=metadata,
         timestamp=utc_now_iso(),
+    )
+
+
+@router.post(
+    "/bootstrap/admin",
+    response_model=Token,
+    status_code=status.HTTP_201_CREATED,
+    summary="Bootstrap first persistent admin",
+)
+@limiter.limit(_RATE_LIMIT_AUTH)
+async def bootstrap_admin(
+    request: Request,
+    body: BootstrapAdminRequest,
+    control_plane: ControlPlane,
+) -> Token:
+    """Create the first persistent admin when demo auth is disabled.
+
+    This endpoint is intentionally narrow: once any active admin exists, it is
+    closed. Production deployments can therefore start with demo auth disabled
+    without baking credentials into images or manifests.
+    """
+
+    del request
+    settings = get_settings()
+    if settings.demo_auth_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Bootstrap is only available when demo auth is disabled",
+        )
+    if await _has_active_admin(control_plane):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Persistent admin already exists",
+        )
+    now = utc_now_iso()
+    user = await control_plane.upsert_user(
+        body.subject,
+        _hash_password(body.password),
+        "admin",
+        "bootstrap",
+        display_name=body.display_name,
+        now=now,
+    )
+    await _audit_auth(
+        control_plane,
+        "bootstrap",
+        "auth.bootstrap_admin",
+        user.subject,
+        resource_type="user",
+        metadata={"role": user.role},
+    )
+    return Token(
+        access_token=_create_access_token(user.subject, user.role, settings),
+        subject=user.subject,
+        role=user.role,
     )
 
 
@@ -427,7 +495,7 @@ async def list_users(
     "/users",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create or update user",
+    summary="Create or replace user credentials",
 )
 async def upsert_user(
     body: UserCreateRequest,
@@ -453,6 +521,106 @@ async def upsert_user(
     return _user_response(user)
 
 
+@router.patch(
+    "/users/{subject}",
+    response_model=UserResponse,
+    summary="Update user metadata",
+)
+async def update_user(
+    subject: str,
+    body: UserUpdateRequest,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> UserResponse:
+    if body.role is None and body.display_name is None:
+        raise HTTPException(status_code=400, detail="No user changes supplied")
+    updated = await control_plane.update_user(
+        subject,
+        display_name=body.display_name,
+        role=body.role,
+        updated_at=utc_now_iso(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "user.update",
+        "user",
+        updated.subject,
+        metadata={"role": updated.role},
+        timestamp=utc_now_iso(),
+    )
+    return _user_response(updated)
+
+
+@router.post(
+    "/users/{subject}/password/change",
+    response_model=UserResponse,
+    summary="Change own password",
+)
+async def change_user_password(
+    subject: str,
+    body: UserPasswordChangeRequest,
+    control_plane: ControlPlane,
+    current_user: CurrentUser,
+) -> UserResponse:
+    if subject != current_user.subject:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Users can only change their own password",
+        )
+    user = await control_plane.get_user(subject)
+    if user is None or user.disabled_at is not None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not _verify_password_hash(body.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    updated = await control_plane.update_user(
+        subject,
+        password_hash=_hash_password(body.new_password),
+        updated_at=utc_now_iso(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "user.password.change",
+        "user",
+        updated.subject,
+        metadata={},
+        timestamp=utc_now_iso(),
+    )
+    return _user_response(updated)
+
+
+@router.post(
+    "/users/{subject}/password/reset",
+    response_model=UserResponse,
+    summary="Reset user password as admin",
+)
+async def reset_user_password(
+    subject: str,
+    body: UserPasswordResetRequest,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> UserResponse:
+    updated = await control_plane.update_user(
+        subject,
+        password_hash=_hash_password(body.new_password),
+        updated_at=utc_now_iso(),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "user.password.reset",
+        "user",
+        updated.subject,
+        metadata={"role": updated.role},
+        timestamp=utc_now_iso(),
+    )
+    return _user_response(updated)
+
+
 @router.delete(
     "/users/{subject}",
     response_model=UserResponse,
@@ -475,6 +643,30 @@ async def disable_user(
         timestamp=utc_now_iso(),
     )
     return _user_response(disabled)
+
+
+@router.post(
+    "/users/{subject}/enable",
+    response_model=UserResponse,
+    summary="Enable user",
+)
+async def enable_user(
+    subject: str,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> UserResponse:
+    enabled = await control_plane.enable_user(subject, updated_at=utc_now_iso())
+    if enabled is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "user.enable",
+        "user",
+        enabled.subject,
+        metadata={"role": enabled.role},
+        timestamp=utc_now_iso(),
+    )
+    return _user_response(enabled)
 
 
 @router.get("/teams", response_model=list[TeamResponse], summary="List teams")
@@ -507,6 +699,38 @@ async def upsert_team(
     await control_plane.record_audit_event(
         current_user.subject,
         "team.upsert",
+        "team",
+        team.team_id,
+        metadata={"name": team.name},
+        timestamp=utc_now_iso(),
+    )
+    return _team_response(team)
+
+
+@router.patch(
+    "/teams/{team_id}",
+    response_model=TeamResponse,
+    summary="Update team metadata",
+)
+async def update_team(
+    team_id: str,
+    body: TeamUpdateRequest,
+    control_plane: ControlPlane,
+    current_user: AdminUser,
+) -> TeamResponse:
+    if body.name is None and body.description is None:
+        raise HTTPException(status_code=400, detail="No team changes supplied")
+    team = await control_plane.update_team(
+        team_id,
+        name=body.name,
+        description=body.description,
+        updated_at=utc_now_iso(),
+    )
+    if team is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    await control_plane.record_audit_event(
+        current_user.subject,
+        "team.update",
         "team",
         team.team_id,
         metadata={"name": team.name},

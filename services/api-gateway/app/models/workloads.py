@@ -59,6 +59,14 @@ class DeadLetterEntry(BaseModel):
     created_at: str | None = None
 
 
+class DeadLetterReplayResponse(BaseModel):
+    message_id: str
+    replayed_message_id: str
+    run_id: str
+    workload_name: str
+    reason: str
+
+
 class RunArtifact(BaseModel):
     id: str
     run_id: str

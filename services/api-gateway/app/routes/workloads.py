@@ -34,6 +34,7 @@ from moiraweave_shared.workloads import (
     ensure_run_transition,
     load_workloads,
 )
+from pydantic import ValidationError
 from redis.exceptions import ResponseError
 from starlette.responses import FileResponse, StreamingResponse
 
@@ -53,6 +54,7 @@ from app.models.workloads import (
     AuditEventResponse,
     ChannelMessageRequest,
     DeadLetterEntry,
+    DeadLetterReplayResponse,
     DeploymentOperationClaimRequest,
     DeploymentOperationCompleteRequest,
     DeploymentOperationEvent,
@@ -2882,6 +2884,89 @@ async def purge_dead_letter_entry(
         },
     )
     return entry
+
+
+@router.post(
+    "/runs/dead-letter/{message_id}/replay",
+    response_model=DeadLetterReplayResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def replay_dead_letter_entry(
+    message_id: str,
+    redis: RedisClient,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeadLetterReplayResponse:
+    entries = await redis.xrange(
+        DEAD_LETTER_STREAM,
+        min=message_id,
+        max=message_id,
+        count=1,
+    )
+    if not entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter entry not found",
+        )
+    _message_id, fields = entries[0]
+    entry = _dead_letter_entry(str(_message_id), dict(fields))
+    try:
+        msg = RunMessage.model_validate(entry.payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Dead-letter payload is not a replayable run message",
+        ) from exc
+
+    run = await _authorize_run(msg.run_id, control_plane, current_user)
+    if run.status not in {"queued", "cancel_requested"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Run status {run.status!r} cannot be replayed",
+        )
+    await _get_workload(msg.workload_name, control_plane, get_settings())
+
+    replayed_message_id = await redis.xadd(
+        RUN_STREAM,
+        msg.model_dump(exclude_none=True),
+    )
+    deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter entry not found",
+        )
+    await control_plane.append_run_event(
+        msg.run_id,
+        "queue.dead_letter.replayed",
+        "Dead-letter message replayed to worker queue.",
+        data={
+            "dead_letter_message_id": message_id,
+            "replayed_message_id": str(replayed_message_id),
+            "reason": entry.reason,
+        },
+        timestamp=utc_now_iso(),
+    )
+    await _audit(
+        control_plane,
+        current_user,
+        "queue.dead_letter.replay",
+        "dead_letter",
+        message_id,
+        metadata={
+            "run_id": msg.run_id,
+            "workload_name": msg.workload_name,
+            "reason": entry.reason,
+            "replayed_message_id": str(replayed_message_id),
+        },
+    )
+    return DeadLetterReplayResponse(
+        message_id=message_id,
+        replayed_message_id=str(replayed_message_id),
+        run_id=msg.run_id,
+        workload_name=msg.workload_name,
+        reason=entry.reason,
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunStatusResponse)

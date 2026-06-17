@@ -89,6 +89,35 @@ async def test_demo_auth_can_be_disabled_without_blocking_stored_users(
     get_settings.cache_clear()
 
 
+async def test_bootstrap_admin_only_when_demo_auth_disabled(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEMO_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
+
+    created = await client.post(
+        "/auth/bootstrap/admin",
+        json={
+            "subject": "owner",
+            "password": "very-strong-password",
+            "display_name": "Owner",
+        },
+    )
+    assert created.status_code == 201
+    body = created.json()
+    assert body["subject"] == "owner"
+    assert body["role"] == "admin"
+    assert body["access_token"]
+
+    repeated = await client.post(
+        "/auth/bootstrap/admin",
+        json={"subject": "other", "password": "very-strong-password"},
+    )
+    assert repeated.status_code == 409
+    get_settings.cache_clear()
+
+
 async def test_token_allows_authenticated_request(client: AsyncClient) -> None:
     # Given: a valid token obtained from the login endpoint
     login = await client.post(
@@ -362,6 +391,114 @@ async def test_admin_can_create_persistent_user_and_login(
     assert login.json()["role"] == "operator"
 
 
+async def test_admin_can_update_disable_enable_and_reset_user_password(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={
+            "subject": "alice",
+            "password": "correct-horse",
+            "role": "operator",
+            "display_name": "Alice",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    updated = await client.patch(
+        "/auth/users/alice",
+        json={"role": "viewer", "display_name": "Alice Viewer"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["role"] == "viewer"
+    assert updated.json()["display_name"] == "Alice Viewer"
+
+    disabled = await client.delete(
+        "/auth/users/alice",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["disabled_at"] is not None
+
+    replaced_while_disabled = await client.post(
+        "/auth/users",
+        json={
+            "subject": "alice",
+            "password": "temporary-password",
+            "role": "operator",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert replaced_while_disabled.status_code == 201
+    assert replaced_while_disabled.json()["disabled_at"] is not None
+
+    enabled = await client.post(
+        "/auth/users/alice/enable",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["disabled_at"] is None
+
+    reset = await client.post(
+        "/auth/users/alice/password/reset",
+        json={"new_password": "reset-password-123"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert reset.status_code == 200
+
+    old_login = await client.post(
+        "/auth/token",
+        json={"username": "alice", "password": "temporary-password"},
+    )
+    new_login = await client.post(
+        "/auth/token",
+        json={"username": "alice", "password": "reset-password-123"},
+    )
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200
+
+
+async def test_user_can_change_own_password(client: AsyncClient) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={"subject": "alice", "password": "correct-horse", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    alice_token = _token("alice", "operator")
+
+    changed = await client.post(
+        "/auth/users/alice/password/change",
+        json={
+            "current_password": "correct-horse",
+            "new_password": "new-correct-horse",
+        },
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    assert changed.status_code == 200
+
+    rejected_old_password = await client.post(
+        "/auth/users/alice/password/change",
+        json={
+            "current_password": "correct-horse",
+            "new_password": "second-correct-horse",
+        },
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    accepted_new_password = await client.post(
+        "/auth/users/alice/password/change",
+        json={
+            "current_password": "new-correct-horse",
+            "new_password": "second-correct-horse",
+        },
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    assert rejected_old_password.status_code == 401
+    assert accepted_new_password.status_code == 200
+
+
 async def test_admin_can_manage_team_and_team_scoped_api_key(
     client: AsyncClient,
 ) -> None:
@@ -390,6 +527,14 @@ async def test_admin_can_manage_team_and_team_scoped_api_key(
     assert member.status_code == 201
     assert member.json()["team_id"] == "agents"
     assert member.json()["subject"] == "team-bot"
+
+    updated_team = await client.patch(
+        "/auth/teams/agents",
+        json={"name": "Agent Platform", "description": "Production agent ops"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert updated_team.status_code == 200
+    assert updated_team.json()["name"] == "Agent Platform"
 
     created_key = await client.post(
         "/auth/api-keys",

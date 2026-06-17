@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
@@ -257,6 +258,50 @@ async def test_dead_letter_entries_can_be_listed_and_purged(
     assert purged.json()["message_id"] == msg_id
     assert remaining.status_code == 200
     assert remaining.json() == []
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == msg_id
+
+
+async def test_dead_letter_entry_can_be_replayed(
+    auth_client: AsyncClient,
+    fake_redis: FakeRedis,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    submitted = await auth_client.post(
+        "/v1/workloads/hermes/runs",
+        json={"payload": {"prompt": "hello"}},
+    )
+    run_id = submitted.json()["run_id"]
+    stream_entries = await fake_redis.xrange(RUN_STREAM)
+    original_payload = stream_entries[0][1]
+    msg_id = await fake_redis.xadd(
+        DEAD_LETTER_STREAM,
+        {
+            "source_stream": RUN_STREAM,
+            "source_id": stream_entries[0][0],
+            "reason": "runtime_unavailable",
+            "payload": json.dumps(original_payload),
+            "created_at": "2026-06-17T07:00:00+00:00",
+        },
+    )
+
+    replayed = await auth_client.post(f"/v1/runs/dead-letter/{msg_id}/replay")
+    remaining = await auth_client.get("/v1/runs/dead-letter")
+    run_events = await auth_client.get(f"/v1/runs/{run_id}/events")
+    audit = await auth_client.get("/v1/audit-events?action=queue.dead_letter.replay")
+
+    assert replayed.status_code == 202
+    body = replayed.json()
+    assert body["message_id"] == msg_id
+    assert body["run_id"] == run_id
+    assert body["workload_name"] == "hermes"
+    assert body["reason"] == "runtime_unavailable"
+    assert body["replayed_message_id"]
+    assert remaining.status_code == 200
+    assert remaining.json() == []
+    assert run_events.status_code == 200
+    assert any(event["type"] == "queue.dead_letter.replayed" for event in run_events.json())
     assert audit.status_code == 200
     assert audit.json()[0]["resource_id"] == msg_id
 

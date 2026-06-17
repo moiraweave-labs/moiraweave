@@ -751,8 +751,22 @@ class ControlPlaneRepository(Protocol):
 
     async def list_users(self) -> list[StoredUser]: ...
 
+    async def update_user(
+        self,
+        subject: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        password_hash: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredUser | None: ...
+
     async def disable_user(
         self, subject: str, *, disabled_at: str | None = None
+    ) -> StoredUser | None: ...
+
+    async def enable_user(
+        self, subject: str, *, updated_at: str | None = None
     ) -> StoredUser | None: ...
 
     async def upsert_team(
@@ -766,6 +780,15 @@ class ControlPlaneRepository(Protocol):
     ) -> StoredTeam: ...
 
     async def list_teams(self) -> list[StoredTeam]: ...
+
+    async def update_team(
+        self,
+        team_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredTeam | None: ...
 
     async def add_team_member(
         self,
@@ -1338,7 +1361,7 @@ class InMemoryControlPlaneRepository:
             created_by=existing.created_by if existing else created_by,
             created_at=existing.created_at if existing else timestamp,
             updated_at=timestamp,
-            disabled_at=None,
+            disabled_at=existing.disabled_at if existing else None,
         )
         self.users[subject] = user
         return user
@@ -1349,6 +1372,29 @@ class InMemoryControlPlaneRepository:
     async def list_users(self) -> list[StoredUser]:
         users = list(self.users.values())
         return sorted(users, key=lambda item: item.created_at, reverse=True)
+
+    async def update_user(
+        self,
+        subject: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        password_hash: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredUser | None:
+        user = self.users.get(subject)
+        if user is None:
+            return None
+        update: dict[str, Any] = {"updated_at": updated_at or utc_now_iso()}
+        if display_name is not None:
+            update["display_name"] = display_name
+        if role is not None:
+            update["role"] = role
+        if password_hash is not None:
+            update["password_hash"] = password_hash
+        updated = user.model_copy(update=update)
+        self.users[subject] = updated
+        return updated
 
     async def disable_user(
         self, subject: str, *, disabled_at: str | None = None
@@ -1361,6 +1407,18 @@ class InMemoryControlPlaneRepository:
                 "disabled_at": user.disabled_at or disabled_at or utc_now_iso(),
                 "updated_at": utc_now_iso(),
             }
+        )
+        self.users[subject] = updated
+        return updated
+
+    async def enable_user(
+        self, subject: str, *, updated_at: str | None = None
+    ) -> StoredUser | None:
+        user = self.users.get(subject)
+        if user is None:
+            return None
+        updated = user.model_copy(
+            update={"disabled_at": None, "updated_at": updated_at or utc_now_iso()}
         )
         self.users[subject] = updated
         return updated
@@ -1390,6 +1448,26 @@ class InMemoryControlPlaneRepository:
     async def list_teams(self) -> list[StoredTeam]:
         teams = list(self.teams.values())
         return sorted(teams, key=lambda item: item.created_at, reverse=True)
+
+    async def update_team(
+        self,
+        team_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredTeam | None:
+        team = self.teams.get(team_id)
+        if team is None:
+            return None
+        update: dict[str, Any] = {"updated_at": updated_at or utc_now_iso()}
+        if name is not None:
+            update["name"] = name
+        if description is not None:
+            update["description"] = description
+        updated = team.model_copy(update=update)
+        self.teams[team_id] = updated
+        return updated
 
     async def add_team_member(
         self,
@@ -2294,8 +2372,7 @@ class PostgresControlPlaneRepository:
                 display_name = EXCLUDED.display_name,
                 password_hash = EXCLUDED.password_hash,
                 role = EXCLUDED.role,
-                updated_at = EXCLUDED.updated_at,
-                disabled_at = NULL
+                updated_at = EXCLUDED.updated_at
             RETURNING subject, display_name, password_hash, role, created_by,
                 created_at, updated_at, disabled_at
             """,
@@ -2331,6 +2408,34 @@ class PostgresControlPlaneRepository:
         )
         return [_user_from_row(row) for row in rows]
 
+    async def update_user(
+        self,
+        subject: str,
+        *,
+        display_name: str | None = None,
+        role: str | None = None,
+        password_hash: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredUser | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE auth_users
+            SET display_name = COALESCE($2, display_name),
+                role = COALESCE($3, role),
+                password_hash = COALESCE($4, password_hash),
+                updated_at = $5::timestamptz
+            WHERE subject = $1
+            RETURNING subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            """,
+            subject,
+            display_name,
+            role,
+            password_hash,
+            _pg_timestamp(updated_at or utc_now_iso()),
+        )
+        return _user_from_row(row) if row else None
+
     async def disable_user(
         self, subject: str, *, disabled_at: str | None = None
     ) -> StoredUser | None:
@@ -2345,6 +2450,22 @@ class PostgresControlPlaneRepository:
             """,
             subject,
             _pg_timestamp(disabled_at or utc_now_iso()),
+        )
+        return _user_from_row(row) if row else None
+
+    async def enable_user(
+        self, subject: str, *, updated_at: str | None = None
+    ) -> StoredUser | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE auth_users
+            SET disabled_at = NULL, updated_at = $2::timestamptz
+            WHERE subject = $1
+            RETURNING subject, display_name, password_hash, role, created_by,
+                created_at, updated_at, disabled_at
+            """,
+            subject,
+            _pg_timestamp(updated_at or utc_now_iso()),
         )
         return _user_from_row(row) if row else None
 
@@ -2386,6 +2507,30 @@ class PostgresControlPlaneRepository:
             """
         )
         return [_team_from_row(row) for row in rows]
+
+    async def update_team(
+        self,
+        team_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        updated_at: str | None = None,
+    ) -> StoredTeam | None:
+        row = await self.pool.fetchrow(
+            """
+            UPDATE teams
+            SET name = COALESCE($2, name),
+                description = COALESCE($3, description),
+                updated_at = $4::timestamptz
+            WHERE team_id = $1
+            RETURNING team_id, name, description, created_by, created_at, updated_at
+            """,
+            team_id,
+            name,
+            description,
+            _pg_timestamp(updated_at or utc_now_iso()),
+        )
+        return _team_from_row(row) if row else None
 
     async def add_team_member(
         self,

@@ -31,6 +31,22 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class BootstrapAdminRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=12, max_length=256)
+    display_name: str | None = Field(default=None, max_length=160)
+
+    @field_validator("subject", "display_name")
+    @classmethod
+    def strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
 class ApiKeyCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     subject: str = Field(min_length=1, max_length=120)
@@ -82,6 +98,30 @@ class UserCreateRequest(BaseModel):
         return value
 
 
+class UserUpdateRequest(BaseModel):
+    role: Literal["admin", "operator", "viewer"] | None = None
+    display_name: str | None = Field(default=None, max_length=160)
+
+    @field_validator("display_name")
+    @classmethod
+    def strip_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class UserPasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class UserPasswordResetRequest(BaseModel):
+    new_password: str = Field(min_length=12, max_length=256)
+
+
 class UserResponse(BaseModel):
     subject: str
     display_name: str | None = None
@@ -98,6 +138,21 @@ class TeamCreateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=500)
 
     @field_validator("team_id", "name", "description")
+    @classmethod
+    def strip_non_empty_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class TeamUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+
+    @field_validator("name", "description")
     @classmethod
     def strip_non_empty_optional(cls, value: str | None) -> str | None:
         if value is None:
