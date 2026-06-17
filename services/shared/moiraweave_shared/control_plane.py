@@ -285,6 +285,24 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE revoked_at IS NULL AND team_id IS NOT NULL;
         """,
     ),
+    (
+        8,
+        """
+        ALTER TABLE deployment_operations
+            ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+            ADD COLUMN IF NOT EXISTS controller_id text,
+            ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz,
+            ADD COLUMN IF NOT EXISTS timeout_seconds integer,
+            ADD COLUMN IF NOT EXISTS stdout_summary text,
+            ADD COLUMN IF NOT EXISTS stderr_summary text;
+
+        CREATE INDEX IF NOT EXISTS deployment_operations_status_lease_idx
+            ON deployment_operations (status, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS deployment_operations_controller_heartbeat_idx
+            ON deployment_operations (controller_id, heartbeat_at DESC)
+            WHERE controller_id IS NOT NULL;
+        """,
+    ),
 )
 
 
@@ -412,6 +430,12 @@ class StoredDeploymentOperation(BaseModel):
     created_at: str
     updated_at: str | None = None
     completed_at: str | None = None
+    lease_expires_at: str | None = None
+    controller_id: str | None = None
+    heartbeat_at: str | None = None
+    timeout_seconds: int | None = None
+    stdout_summary: str | None = None
+    stderr_summary: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -628,6 +652,12 @@ class ControlPlaneRepository(Protocol):
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation: ...
 
     async def get_deployment_operation(
@@ -642,6 +672,12 @@ class ControlPlaneRepository(Protocol):
         metadata: dict[str, Any],
         updated_at: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation: ...
 
     async def list_deployment_operations(
@@ -1105,6 +1141,12 @@ class InMemoryControlPlaneRepository:
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
         timestamp = now or utc_now_iso()
         operation = StoredDeploymentOperation(
@@ -1119,6 +1161,12 @@ class InMemoryControlPlaneRepository:
             created_at=timestamp,
             updated_at=timestamp,
             completed_at=completed_at,
+            lease_expires_at=lease_expires_at,
+            controller_id=controller_id,
+            heartbeat_at=heartbeat_at,
+            timeout_seconds=timeout_seconds,
+            stdout_summary=stdout_summary,
+            stderr_summary=stderr_summary,
         )
         self.deployment_operations[operation_id] = operation
         return operation
@@ -1161,6 +1209,12 @@ class InMemoryControlPlaneRepository:
         metadata: dict[str, Any],
         updated_at: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
         operation = self.deployment_operations[operation_id]
         updated = operation.model_copy(
@@ -1169,6 +1223,24 @@ class InMemoryControlPlaneRepository:
                 "metadata": metadata,
                 "updated_at": updated_at or utc_now_iso(),
                 "completed_at": completed_at,
+                "lease_expires_at": lease_expires_at
+                if lease_expires_at is not None
+                else operation.lease_expires_at,
+                "controller_id": controller_id
+                if controller_id is not None
+                else operation.controller_id,
+                "heartbeat_at": heartbeat_at
+                if heartbeat_at is not None
+                else operation.heartbeat_at,
+                "timeout_seconds": timeout_seconds
+                if timeout_seconds is not None
+                else operation.timeout_seconds,
+                "stdout_summary": stdout_summary
+                if stdout_summary is not None
+                else operation.stdout_summary,
+                "stderr_summary": stderr_summary
+                if stderr_summary is not None
+                else operation.stderr_summary,
             }
         )
         self.deployment_operations[operation_id] = updated
@@ -2009,21 +2081,31 @@ class PostgresControlPlaneRepository:
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
         timestamp = _pg_timestamp(now or utc_now_iso())
         row = await self.pool.fetchrow(
             """
             INSERT INTO deployment_operations (
                 operation_id, action, workload_name, target, environment, status,
-                user_subject, metadata, created_at, updated_at, completed_at
+                user_subject, metadata, created_at, updated_at, completed_at,
+                lease_expires_at, controller_id, heartbeat_at, timeout_seconds,
+                stdout_summary, stderr_summary
             )
             VALUES (
                 $1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb,
-                $9::timestamptz, $9::timestamptz, $10::timestamptz
+                $9::timestamptz, $9::timestamptz, $10::timestamptz,
+                $11::timestamptz, $12, $13::timestamptz, $14, $15, $16
             )
             RETURNING operation_id::text, action, workload_name, target,
                 environment, status, user_subject, metadata, created_at, updated_at,
-                completed_at
+                completed_at, lease_expires_at, controller_id, heartbeat_at,
+                timeout_seconds, stdout_summary, stderr_summary
             """,
             operation_id,
             action,
@@ -2035,6 +2117,12 @@ class PostgresControlPlaneRepository:
             json.dumps(metadata or {}),
             timestamp,
             _pg_timestamp(completed_at),
+            _pg_timestamp(lease_expires_at),
+            controller_id,
+            _pg_timestamp(heartbeat_at),
+            timeout_seconds,
+            stdout_summary,
+            stderr_summary,
         )
         return _deployment_operation_from_row(row)
 
@@ -2044,7 +2132,9 @@ class PostgresControlPlaneRepository:
         row = await self.pool.fetchrow(
             """
             SELECT operation_id::text, action, workload_name, target, environment,
-                status, user_subject, metadata, created_at, updated_at, completed_at
+                status, user_subject, metadata, created_at, updated_at, completed_at,
+                lease_expires_at, controller_id, heartbeat_at, timeout_seconds,
+                stdout_summary, stderr_summary
             FROM deployment_operations
             WHERE operation_id = $1::uuid
             """,
@@ -2068,7 +2158,8 @@ class PostgresControlPlaneRepository:
             """
             SELECT operation_id::text, action, workload_name, target, environment,
                 status, user_subject, metadata, created_at, updated_at,
-                completed_at
+                completed_at, lease_expires_at, controller_id, heartbeat_at,
+                timeout_seconds, stdout_summary, stderr_summary
             FROM deployment_operations
             WHERE ($1::text IS NULL OR user_subject = $1)
               AND ($2::text IS NULL OR workload_name = $2)
@@ -2098,6 +2189,12 @@ class PostgresControlPlaneRepository:
         metadata: dict[str, Any],
         updated_at: str | None = None,
         completed_at: str | None = None,
+        lease_expires_at: str | None = None,
+        controller_id: str | None = None,
+        heartbeat_at: str | None = None,
+        timeout_seconds: int | None = None,
+        stdout_summary: str | None = None,
+        stderr_summary: str | None = None,
     ) -> StoredDeploymentOperation:
         row = await self.pool.fetchrow(
             """
@@ -2105,17 +2202,30 @@ class PostgresControlPlaneRepository:
             SET status = $2,
                 metadata = $3::jsonb,
                 updated_at = $4::timestamptz,
-                completed_at = $5::timestamptz
+                completed_at = $5::timestamptz,
+                lease_expires_at = COALESCE($6::timestamptz, lease_expires_at),
+                controller_id = COALESCE($7, controller_id),
+                heartbeat_at = COALESCE($8::timestamptz, heartbeat_at),
+                timeout_seconds = COALESCE($9, timeout_seconds),
+                stdout_summary = COALESCE($10, stdout_summary),
+                stderr_summary = COALESCE($11, stderr_summary)
             WHERE operation_id = $1::uuid
             RETURNING operation_id::text, action, workload_name, target,
                 environment, status, user_subject, metadata, created_at, updated_at,
-                completed_at
+                completed_at, lease_expires_at, controller_id, heartbeat_at,
+                timeout_seconds, stdout_summary, stderr_summary
             """,
             operation_id,
             status,
             json.dumps(metadata),
             _pg_timestamp(updated_at or utc_now_iso()),
             _pg_timestamp(completed_at),
+            _pg_timestamp(lease_expires_at),
+            controller_id,
+            _pg_timestamp(heartbeat_at),
+            timeout_seconds,
+            stdout_summary,
+            stderr_summary,
         )
         if row is None:
             raise KeyError(operation_id)
@@ -2728,6 +2838,12 @@ def _deployment_operation_from_row(row: Any) -> StoredDeploymentOperation:
         created_at=str(_iso(row["created_at"])),
         updated_at=_iso(row["updated_at"]),
         completed_at=_iso(row["completed_at"]),
+        lease_expires_at=_iso(row["lease_expires_at"]),
+        controller_id=row["controller_id"],
+        heartbeat_at=_iso(row["heartbeat_at"]),
+        timeout_seconds=row["timeout_seconds"],
+        stdout_summary=row["stdout_summary"],
+        stderr_summary=row["stderr_summary"],
     )
 
 

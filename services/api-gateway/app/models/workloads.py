@@ -236,6 +236,7 @@ class DeploymentOperationRequest(BaseModel):
     target: str = Field(default="local", pattern="^(local|kubernetes|k8s|external)$")
     env: str = Field(default="dev", min_length=1, max_length=64)
     executor: str = Field(default="api", pattern="^(api|controller|manual)$")
+    timeout_seconds: int | None = Field(default=None, ge=1, le=86400)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -250,6 +251,12 @@ class DeploymentOperationResponse(BaseModel):
     created_at: str
     updated_at: str | None = None
     completed_at: str | None = None
+    lease_expires_at: str | None = None
+    controller_id: str | None = None
+    heartbeat_at: str | None = None
+    timeout_seconds: int | None = None
+    stdout_summary: str | None = None
+    stderr_summary: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -285,6 +292,13 @@ class DeploymentOperationEvent(BaseModel):
 
 class DeploymentOperationClaimRequest(BaseModel):
     controller_id: str = Field(min_length=1, max_length=128)
+    lease_seconds: int = Field(default=300, ge=30, le=3600)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentOperationHeartbeatRequest(BaseModel):
+    controller_id: str = Field(min_length=1, max_length=128)
+    lease_seconds: int = Field(default=300, ge=30, le=3600)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -297,6 +311,8 @@ class DeploymentOperationEventRequest(BaseModel):
 class DeploymentOperationCompleteRequest(BaseModel):
     status: str = Field(pattern="^(succeeded|failed|canceled)$")
     message: str | None = Field(default=None, max_length=2000)
+    stdout_summary: str | None = Field(default=None, max_length=4000)
+    stderr_summary: str | None = Field(default=None, max_length=4000)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

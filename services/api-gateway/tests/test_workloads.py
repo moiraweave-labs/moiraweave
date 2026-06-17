@@ -360,6 +360,45 @@ async def test_operations_alerts_surface_actionable_issues(
     assert by_id["runs-failed"]["metadata"]["run_ids"] == [run_id]
 
 
+async def test_operations_alerts_include_expired_controller_lease(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    operation = await auth_client.post(
+        "/v1/deployment-operations",
+        json={
+            "action": "apply",
+            "workload_name": "hermes",
+            "target": "kubernetes",
+            "env": "prod",
+            "executor": "controller",
+        },
+    )
+    operation_id = operation.json()["operation_id"]
+    claimed = await auth_client.post(
+        f"/v1/deployment-operations/{operation_id}/claim",
+        json={"controller_id": "controller-prod"},
+    )
+    await control_plane.update_deployment_operation(
+        operation_id,
+        status="running",
+        metadata=claimed.json()["metadata"],
+        lease_expires_at="2020-01-01T00:00:00+00:00",
+        controller_id="controller-prod",
+        heartbeat_at="2020-01-01T00:00:00+00:00",
+    )
+
+    alerts = await auth_client.get("/v1/operations/alerts?env=prod")
+
+    assert alerts.status_code == 200
+    by_id = {item["id"]: item for item in alerts.json()}
+    assert by_id["deployment-controller-lease-expired"]["count"] == 1
+    assert by_id["deployment-controller-lease-expired"]["metadata"][
+        "operation_ids"
+    ] == [operation_id]
+
+
 async def test_submit_run_unknown_workload_returns_404(
     auth_client: AsyncClient,
 ) -> None:
@@ -1300,6 +1339,8 @@ async def test_deployment_operation_controller_lifecycle(
     assert body["completed_at"] is None
     assert body["metadata"]["executor"] == "controller"
     assert body["metadata"]["controller_required"] is True
+    assert body["controller_id"] is None
+    assert body["lease_expires_at"] is None
 
     listed = await auth_client.get("/v1/deployment-operations?status=queued&scope=all")
     assert listed.status_code == 200
@@ -1314,9 +1355,22 @@ async def test_deployment_operation_controller_lifecycle(
     )
     assert claim.status_code == 200
     assert claim.json()["status"] == "running"
+    assert claim.json()["controller_id"] == "moiraweave-k8s-controller/dev"
+    assert claim.json()["heartbeat_at"] is not None
+    assert claim.json()["lease_expires_at"] is not None
     assert (
         claim.json()["metadata"]["controller"]["id"] == "moiraweave-k8s-controller/dev"
     )
+
+    heartbeat = await auth_client.post(
+        f"/v1/deployment-operations/{body['operation_id']}/heartbeat",
+        json={
+            "controller_id": "moiraweave-k8s-controller/dev",
+            "metadata": {"pod": "controller-0"},
+        },
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["metadata"]["controller"]["pod"] == "controller-0"
 
     event = await auth_client.post(
         f"/v1/deployment-operations/{body['operation_id']}/events",
@@ -1334,12 +1388,14 @@ async def test_deployment_operation_controller_lifecycle(
         json={
             "status": "succeeded",
             "message": "Controller applied workload.",
+            "stdout_summary": "helm upgrade --install ok",
             "metadata": {"revision": "abc123"},
         },
     )
     assert complete.status_code == 200
     assert complete.json()["status"] == "succeeded"
     assert complete.json()["completed_at"] is not None
+    assert complete.json()["stdout_summary"] == "helm upgrade --install ok"
     assert complete.json()["metadata"]["controller_result"]["revision"] == "abc123"
 
     deployments = await auth_client.get("/v1/deployments?workload_name=hermes&env=dev")
@@ -1355,9 +1411,53 @@ async def test_deployment_operation_controller_lifecycle(
         "operation.plan",
         "operation.queued",
         "operation.claimed",
+        "operation.heartbeat",
         "controller.apply",
         "operation.succeeded",
     ]
+
+
+async def test_deployment_operation_can_be_reclaimed_after_expired_lease(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    queued = await auth_client.post(
+        "/v1/deployment-operations",
+        json={
+            "action": "apply",
+            "workload_name": "hermes",
+            "target": "kubernetes",
+            "env": "dev",
+            "executor": "controller",
+        },
+    )
+    operation_id = queued.json()["operation_id"]
+    claimed = await auth_client.post(
+        f"/v1/deployment-operations/{operation_id}/claim",
+        json={"controller_id": "controller-old"},
+    )
+    assert claimed.status_code == 200
+    await control_plane.update_deployment_operation(
+        operation_id,
+        status="running",
+        metadata=claimed.json()["metadata"],
+        lease_expires_at="2020-01-01T00:00:00+00:00",
+        controller_id="controller-old",
+        heartbeat_at="2020-01-01T00:00:00+00:00",
+    )
+
+    reclaimed = await auth_client.post(
+        f"/v1/deployment-operations/{operation_id}/claim",
+        json={"controller_id": "controller-new", "lease_seconds": 60},
+    )
+
+    assert reclaimed.status_code == 200
+    assert reclaimed.json()["status"] == "running"
+    assert reclaimed.json()["controller_id"] == "controller-new"
+    assert reclaimed.json()["metadata"]["controller"]["reclaimed"] is True
+    events = await auth_client.get(f"/v1/deployment-operations/{operation_id}/events")
+    assert events.json()[-1]["type"] == "operation.reclaimed"
 
 
 async def test_deployment_operation_undeploy_returns_guidance(

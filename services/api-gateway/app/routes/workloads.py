@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 from collections.abc import AsyncGenerator  # noqa: TC003
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,7 @@ from app.models.workloads import (
     DeploymentOperationCompleteRequest,
     DeploymentOperationEvent,
     DeploymentOperationEventRequest,
+    DeploymentOperationHeartbeatRequest,
     DeploymentOperationRequest,
     DeploymentOperationResponse,
     DeploymentPlanResponse,
@@ -842,6 +844,21 @@ def _deployment_operation_event_response(event: Any) -> DeploymentOperationEvent
 
 def _can_access_deployment_operation(operation: Any, current_user: Any) -> bool:
     return bool(operation.user == current_user.subject or current_user.role == "admin")
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _operation_lease_expiry(now: str, lease_seconds: int) -> str:
+    return (_parse_utc_timestamp(now) + timedelta(seconds=lease_seconds)).isoformat()
+
+
+def _deployment_operation_lease_expired(operation: Any, now: str) -> bool:
+    if not operation.lease_expires_at:
+        return False
+    return _parse_utc_timestamp(operation.lease_expires_at) <= _parse_utc_timestamp(now)
 
 
 async def _sync_deployment_record_for_completed_operation(
@@ -2403,6 +2420,8 @@ async def create_deployment_operation(
     now = utc_now_iso()
     metadata = dict(body.metadata)
     metadata["executor"] = body.executor
+    if body.timeout_seconds is not None:
+        metadata["timeout_seconds"] = body.timeout_seconds
     events: list[tuple[str, str, dict[str, Any]]] = []
     operation_status = "succeeded"
     completed_at: str | None = now
@@ -2519,6 +2538,7 @@ async def create_deployment_operation(
         metadata=metadata,
         now=now,
         completed_at=completed_at,
+        timeout_seconds=body.timeout_seconds,
     )
     for event_type, message, data in events:
         await control_plane.append_deployment_operation_event(
@@ -2605,6 +2625,12 @@ async def list_operations_alerts(
     running_ops = [
         operation for operation in operations if operation.status == "running"
     ]
+    now = utc_now_iso()
+    expired_lease_ops = [
+        operation
+        for operation in running_ops
+        if _deployment_operation_lease_expired(operation, now)
+    ]
     if queued_ops:
         alerts.append(
             OperationsAlert(
@@ -2646,6 +2672,36 @@ async def list_operations_alerts(
                     "operation_ids": [
                         operation.operation_id for operation in running_ops[:10]
                     ]
+                },
+            )
+        )
+    if expired_lease_ops:
+        alerts.append(
+            OperationsAlert(
+                id="deployment-controller-lease-expired",
+                severity="critical",
+                title="Deployment controller lease expired",
+                detail=(
+                    f"{len(expired_lease_ops)} running deployment operation(s) "
+                    "missed their controller heartbeat lease."
+                ),
+                action=(
+                    "Restart the deployment controller or reclaim the operation "
+                    "from a healthy controller."
+                ),
+                resource_type="deployment_operation",
+                env=env,
+                count=len(expired_lease_ops),
+                command="moira deploy operations list --status running",
+                metadata={
+                    "operation_ids": [
+                        operation.operation_id for operation in expired_lease_ops[:10]
+                    ],
+                    "controller_ids": [
+                        operation.controller_id
+                        for operation in expired_lease_ops[:10]
+                        if operation.controller_id is not None
+                    ],
                 },
             )
         )
@@ -2808,19 +2864,29 @@ async def claim_deployment_operation(
         )
     if not _can_access_deployment_operation(operation, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    if operation.status != "queued":
+    now = utc_now_iso()
+    lease_expired = (
+        operation.status == "running"
+        and _deployment_operation_lease_expired(operation, now)
+    )
+    if operation.status != "queued" and not lease_expired:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Deployment operation is {operation.status}, not queued",
+            detail=(
+                f"Deployment operation is {operation.status}, not queued or expired"
+            ),
         )
 
-    now = utc_now_iso()
+    lease_expires_at = _operation_lease_expiry(now, body.lease_seconds)
     metadata = {
         **operation.metadata,
         "controller": {
             "id": body.controller_id,
             "claimed_by": current_user.subject,
             "claimed_at": now,
+            "lease_seconds": body.lease_seconds,
+            "lease_expires_at": lease_expires_at,
+            "reclaimed": lease_expired,
             **body.metadata,
         },
     }
@@ -2829,12 +2895,25 @@ async def claim_deployment_operation(
         status="running",
         metadata=metadata,
         updated_at=now,
+        lease_expires_at=lease_expires_at,
+        controller_id=body.controller_id,
+        heartbeat_at=now,
     )
+    event_type = "operation.reclaimed" if lease_expired else "operation.claimed"
     await control_plane.append_deployment_operation_event(
         operation_id,
-        "operation.claimed",
-        "Deployment operation claimed by controller.",
-        data={"controller_id": body.controller_id, "claimed_by": current_user.subject},
+        event_type,
+        (
+            "Deployment operation reclaimed by controller."
+            if lease_expired
+            else "Deployment operation claimed by controller."
+        ),
+        data={
+            "controller_id": body.controller_id,
+            "claimed_by": current_user.subject,
+            "lease_expires_at": lease_expires_at,
+            "reclaimed": lease_expired,
+        },
         timestamp=now,
     )
     await _audit(
@@ -2848,6 +2927,84 @@ async def claim_deployment_operation(
             "target": operation.target,
             "env": operation.env,
             "controller_id": body.controller_id,
+        },
+    )
+    return _deployment_operation_response(updated)
+
+
+@router.post(
+    "/deployment-operations/{operation_id}/heartbeat",
+    response_model=DeploymentOperationResponse,
+)
+async def heartbeat_deployment_operation(
+    operation_id: str,
+    body: DeploymentOperationHeartbeatRequest,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeploymentOperationResponse:
+    operation = await control_plane.get_deployment_operation(operation_id)
+    if operation is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Deployment operation not found",
+        )
+    if not _can_access_deployment_operation(operation, current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    if operation.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Deployment operation is {operation.status}, not running",
+        )
+    if operation.controller_id and operation.controller_id != body.controller_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deployment operation is claimed by a different controller",
+        )
+
+    now = utc_now_iso()
+    lease_expires_at = _operation_lease_expiry(now, body.lease_seconds)
+    metadata = {
+        **operation.metadata,
+        "controller": {
+            **dict(operation.metadata.get("controller") or {}),
+            "id": body.controller_id,
+            "last_heartbeat_at": now,
+            "lease_seconds": body.lease_seconds,
+            "lease_expires_at": lease_expires_at,
+            **body.metadata,
+        },
+    }
+    updated = await control_plane.update_deployment_operation(
+        operation_id,
+        status="running",
+        metadata=metadata,
+        updated_at=now,
+        lease_expires_at=lease_expires_at,
+        controller_id=body.controller_id,
+        heartbeat_at=now,
+    )
+    await control_plane.append_deployment_operation_event(
+        operation_id,
+        "operation.heartbeat",
+        "Deployment controller heartbeat received.",
+        data={
+            "controller_id": body.controller_id,
+            "lease_expires_at": lease_expires_at,
+        },
+        timestamp=now,
+    )
+    await _audit(
+        control_plane,
+        current_user,
+        "deployment_operation.heartbeat",
+        "deployment_operation",
+        operation_id,
+        metadata={
+            "workload_name": operation.workload_name,
+            "target": operation.target,
+            "env": operation.env,
+            "controller_id": body.controller_id,
+            "lease_expires_at": lease_expires_at,
         },
     )
     return _deployment_operation_response(updated)
@@ -2916,12 +3073,18 @@ async def complete_deployment_operation(
     }
     if body.message:
         metadata["controller_result"]["message"] = body.message
+    if body.stdout_summary is not None:
+        metadata["controller_result"]["stdout_summary"] = body.stdout_summary
+    if body.stderr_summary is not None:
+        metadata["controller_result"]["stderr_summary"] = body.stderr_summary
     updated = await control_plane.update_deployment_operation(
         operation_id,
         status=body.status,
         metadata=metadata,
         updated_at=now,
         completed_at=now,
+        stdout_summary=body.stdout_summary,
+        stderr_summary=body.stderr_summary,
     )
     await control_plane.append_deployment_operation_event(
         operation_id,
