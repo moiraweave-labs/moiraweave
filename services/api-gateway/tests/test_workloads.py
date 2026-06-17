@@ -303,7 +303,9 @@ async def test_dead_letter_entry_can_be_replayed(
     assert remaining.status_code == 200
     assert remaining.json() == []
     assert run_events.status_code == 200
-    assert any(event["type"] == "queue.dead_letter.replayed" for event in run_events.json())
+    assert any(
+        event["type"] == "queue.dead_letter.replayed" for event in run_events.json()
+    )
     assert audit.status_code == 200
     assert audit.json()[0]["resource_id"] == msg_id
 

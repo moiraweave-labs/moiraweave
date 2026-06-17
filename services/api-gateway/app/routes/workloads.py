@@ -2652,7 +2652,9 @@ async def list_operations_alerts(
         runs = [
             run
             for run in runs
-            if str((run.payload or {}).get("env") or (run.result or {}).get("env") or "")
+            if str(
+                (run.payload or {}).get("env") or (run.result or {}).get("env") or ""
+            )
             == env
         ]
     lost_runs = [run for run in runs if run.status == "lost"]
@@ -2705,9 +2707,7 @@ async def list_operations_alerts(
                 env=env,
                 count=len(cancel_pending_runs),
                 command="moira run list --status cancel_requested",
-                metadata={
-                    "run_ids": [run.run_id for run in cancel_pending_runs[:10]]
-                },
+                metadata={"run_ids": [run.run_id for run in cancel_pending_runs[:10]]},
             )
         )
 
@@ -3616,7 +3616,9 @@ async def post_signed_webhook_agent_message(
         request.headers.get("x-moiraweave-signature"),
         raw_body,
     )
-    webhook_user = TokenData(subject=f"webhook:{channel.strip().lower()}", role="operator")
+    webhook_user = TokenData(
+        subject=f"webhook:{channel.strip().lower()}", role="operator"
+    )
     return await post_channel_agent_message(
         channel,
         name,
