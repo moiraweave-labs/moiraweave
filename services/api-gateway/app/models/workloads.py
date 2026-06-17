@@ -50,6 +50,15 @@ class RunEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeadLetterEntry(BaseModel):
+    message_id: str
+    source_stream: str
+    source_id: str
+    reason: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+
+
 class RunArtifact(BaseModel):
     id: str
     run_id: str

@@ -273,6 +273,8 @@ async def reclaim_pending_runs(
     heartbeat_interval_seconds: float,
     min_idle_seconds: float,
     count: int,
+    run_retry_attempts: int = 1,
+    run_retry_backoff_seconds: float = 0.0,
 ) -> int:
     """Recover abandoned pending Redis Stream messages.
 
@@ -359,6 +361,8 @@ async def reclaim_pending_runs(
             dict(claimed_fields),
             workloads_dir=workloads_dir,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
+            run_retry_attempts=run_retry_attempts,
+            run_retry_backoff_seconds=run_retry_backoff_seconds,
         )
         reclaimed += 1
 
@@ -416,6 +420,8 @@ async def run_consumer(
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
                 min_idle_seconds=pending_reclaim_idle_seconds,
                 count=pending_reclaim_count,
+                run_retry_attempts=run_retry_attempts,
+                run_retry_backoff_seconds=run_retry_backoff_seconds,
             )
             if reclaimed:
                 logger.info(

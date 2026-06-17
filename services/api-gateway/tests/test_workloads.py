@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from moiraweave_shared.streams import CONSUMER_GROUP, RUN_STREAM
+from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
 
 from app.models.workloads import DeploymentResponse
 from app.routes.workloads import _deployment_probe_url, _probe_deployment_endpoint
@@ -224,6 +224,49 @@ async def test_submit_run_queues_dispatch(
     assert len(stream_entries) == 1
     assert stream_entries[0][1]["run_id"] == run_id
     assert stream_entries[0][1]["workload_manifest"]
+
+
+async def test_dead_letter_entries_can_be_listed_and_purged(
+    auth_client: AsyncClient,
+    fake_redis: FakeRedis,
+) -> None:
+    msg_id = await fake_redis.xadd(
+        DEAD_LETTER_STREAM,
+        {
+            "source_stream": RUN_STREAM,
+            "source_id": "1-0",
+            "reason": "invalid_run_message",
+            "payload": '{"run_id": "bad-run"}',
+            "created_at": "2026-06-17T07:00:00+00:00",
+        },
+    )
+
+    listed = await auth_client.get("/v1/runs/dead-letter")
+    body = listed.json()
+
+    assert listed.status_code == 200
+    assert body[0]["message_id"] == msg_id
+    assert body[0]["reason"] == "invalid_run_message"
+    assert body[0]["payload"] == {"run_id": "bad-run"}
+
+    purged = await auth_client.delete(f"/v1/runs/dead-letter/{msg_id}")
+    remaining = await auth_client.get("/v1/runs/dead-letter")
+    audit = await auth_client.get("/v1/audit-events?action=queue.dead_letter.purge")
+
+    assert purged.status_code == 200
+    assert purged.json()["message_id"] == msg_id
+    assert remaining.status_code == 200
+    assert remaining.json() == []
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == msg_id
+
+
+async def test_dead_letter_purge_missing_entry_returns_404(
+    auth_client: AsyncClient,
+) -> None:
+    resp = await auth_client.delete("/v1/runs/dead-letter/0-0")
+
+    assert resp.status_code == 404
 
 
 async def test_submit_run_unknown_workload_returns_404(

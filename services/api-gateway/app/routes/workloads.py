@@ -26,7 +26,7 @@ from moiraweave_shared.control_plane import (
     workloads_by_name,
 )
 from moiraweave_shared.schemas import RunMessage
-from moiraweave_shared.streams import CONSUMER_GROUP, RUN_STREAM
+from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
 from moiraweave_shared.workloads import (
     TERMINAL_RUN_STATUSES,
     RunStateTransitionError,
@@ -52,6 +52,7 @@ from app.models.workloads import (
     ArtifactPreviewResponse,
     AuditEventResponse,
     ChannelMessageRequest,
+    DeadLetterEntry,
     DeploymentOperationClaimRequest,
     DeploymentOperationCompleteRequest,
     DeploymentOperationEvent,
@@ -687,6 +688,31 @@ def _run_response(run: StoredRun) -> RunStatusResponse:
 
 def _event_response(event: StoredRunEvent) -> RunEvent:
     return RunEvent(**event.model_dump())
+
+
+def _dead_letter_entry(message_id: str, fields: dict[str, Any]) -> DeadLetterEntry:
+    payload_raw = fields.get("payload", "{}")
+    payload: dict[str, Any]
+    if isinstance(payload_raw, str):
+        try:
+            parsed = json.loads(payload_raw)
+            payload = parsed if isinstance(parsed, dict) else {"raw": payload_raw}
+        except json.JSONDecodeError:
+            payload = {"raw": payload_raw}
+    elif isinstance(payload_raw, dict):
+        payload = payload_raw
+    else:
+        payload = {"raw": str(payload_raw)}
+    return DeadLetterEntry(
+        message_id=message_id,
+        source_stream=str(fields.get("source_stream", "")),
+        source_id=str(fields.get("source_id", "")),
+        reason=str(fields.get("reason", "unknown")),
+        payload=payload,
+        created_at=(
+            str(fields["created_at"]) if fields.get("created_at") is not None else None
+        ),
+    )
 
 
 def _audit_event_response(event: StoredAuditEvent) -> AuditEventResponse:
@@ -2801,6 +2827,61 @@ async def list_runs(
         offset=offset,
     )
     return [_run_response(run) for run in runs]
+
+
+@router.get("/runs/dead-letter", response_model=list[DeadLetterEntry])
+async def list_dead_letter_entries(
+    redis: RedisClient,
+    current_user: OperatorUser,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[DeadLetterEntry]:
+    del current_user
+    entries = await redis.xrevrange(DEAD_LETTER_STREAM, count=limit)
+    return [
+        _dead_letter_entry(str(message_id), dict(fields))
+        for message_id, fields in entries
+    ]
+
+
+@router.delete("/runs/dead-letter/{message_id}", response_model=DeadLetterEntry)
+async def purge_dead_letter_entry(
+    message_id: str,
+    redis: RedisClient,
+    control_plane: ControlPlane,
+    current_user: OperatorUser,
+) -> DeadLetterEntry:
+    entries = await redis.xrange(
+        DEAD_LETTER_STREAM,
+        min=message_id,
+        max=message_id,
+        count=1,
+    )
+    if not entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter entry not found",
+        )
+    _message_id, fields = entries[0]
+    entry = _dead_letter_entry(str(_message_id), dict(fields))
+    deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dead-letter entry not found",
+        )
+    await _audit(
+        control_plane,
+        current_user,
+        "queue.dead_letter.purge",
+        "dead_letter",
+        message_id,
+        metadata={
+            "reason": entry.reason,
+            "source_stream": entry.source_stream,
+            "source_id": entry.source_id,
+        },
+    )
+    return entry
 
 
 @router.get("/runs/{run_id}", response_model=RunStatusResponse)

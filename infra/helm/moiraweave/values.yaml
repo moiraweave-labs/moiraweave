@@ -124,6 +124,22 @@ worker:
       value: /workspace/workloads
     - name: ARTIFACTS_DIR
       value: /workspace/artifacts
+    - name: HEARTBEAT_INTERVAL_SECONDS
+      value: "10"
+    - name: STALE_RUN_SECONDS
+      value: "120"
+    - name: STALE_CHECK_INTERVAL_SECONDS
+      value: "30"
+    - name: PENDING_RECLAIM_IDLE_SECONDS
+      value: "60"
+    - name: PENDING_RECLAIM_INTERVAL_SECONDS
+      value: "30"
+    - name: PENDING_RECLAIM_COUNT
+      value: "10"
+    - name: RUN_RETRY_ATTEMPTS
+      value: "3"
+    - name: RUN_RETRY_BACKOFF_SECONDS
+      value: "1"
   livenessProbe:
     exec:
       command:

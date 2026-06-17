@@ -519,6 +519,72 @@ async def test_reclaim_pending_runs_processes_queued_run(
     assert pending["pending"] == 0
 
 
+async def test_reclaim_pending_runs_uses_retry_configuration(
+    fake_redis: Any,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = 0
+
+    async def flaky_send_message(
+        self: HttpAgentAdapter, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        nonlocal calls
+        del self, payload
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("runtime warming up")
+        return {"response": "reclaimed after retry"}
+
+    monkeypatch.setattr(HttpAgentAdapter, "send_message", flaky_send_message)
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    workload = _agent_workload()
+    await control_plane.upsert_workload(workload, "user")
+    await control_plane.create_run(
+        "run-pending-retry",
+        "agent",
+        {},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    stream_message = RunMessage(
+        run_id="run-pending-retry",
+        workload_name="agent",
+        payload="{}",
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+    await fake_redis.xadd(RUN_STREAM, stream_message)
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "old-worker",
+        {RUN_STREAM: ">"},
+        count=1,
+    )
+    await asyncio.sleep(0.01)
+
+    reclaimed = await reclaim_pending_runs(
+        fake_redis,
+        control_plane,
+        "new-worker",
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        min_idle_seconds=0.001,
+        count=10,
+        run_retry_attempts=2,
+        run_retry_backoff_seconds=0.0,
+    )
+
+    run = await control_plane.get_run("run-pending-retry")
+    events = await control_plane.list_run_events("run-pending-retry")
+
+    assert reclaimed == 1
+    assert calls == 2
+    assert run is not None
+    assert run.status == "succeeded"
+    assert any(event.type == "run.retry" for event in events)
+
+
 async def test_reclaim_pending_runs_skips_active_heartbeating_run(
     fake_redis: Any,
     tmp_path,
