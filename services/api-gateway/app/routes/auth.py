@@ -280,14 +280,26 @@ async def login(
     Override ``DEMO_USERNAME`` and ``DEMO_PASSWORD`` via environment variables.
     Disable demo login with ``DEMO_AUTH_ENABLED=false`` outside local/dev.
     """
-    del request
     settings = get_settings()
+    client_host = request.client.host if request.client is not None else None
     user = await control_plane.get_user(body.username)
     if (
         user is not None
         and user.disabled_at is None
         and _verify_password_hash(body.password, user.password_hash)
     ):
+        await _audit_auth(
+            control_plane,
+            body.username,
+            "auth.login.succeeded",
+            body.username,
+            resource_type="auth_session",
+            metadata={
+                "credential_type": "password",
+                "client_host": client_host,
+                "demo": False,
+            },
+        )
         return Token(
             access_token=_create_access_token(body.username, user.role, settings),
             subject=body.username,
@@ -299,6 +311,18 @@ async def login(
         and body.username == settings.demo_username
         and _verify_password(body.password, settings.demo_password.get_secret_value())
     ):
+        await _audit_auth(
+            control_plane,
+            body.username,
+            "auth.login.succeeded",
+            body.username,
+            resource_type="auth_session",
+            metadata={
+                "credential_type": "password",
+                "client_host": client_host,
+                "demo": True,
+            },
+        )
         return Token(
             access_token=_create_access_token(
                 body.username, settings.demo_role, settings
@@ -307,6 +331,18 @@ async def login(
             role=settings.demo_role,
         )
 
+    await _audit_auth(
+        control_plane,
+        body.username or "anonymous",
+        "auth.login.failed",
+        body.username or "anonymous",
+        resource_type="auth_session",
+        metadata={
+            "credential_type": "password",
+            "client_host": client_host,
+            "reason": "invalid_credentials",
+        },
+    )
     if user is not None and user.disabled_at is not None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -34,6 +34,14 @@ async def test_login_success_returns_token(client: AsyncClient) -> None:
     assert body["role"] == "admin"
     assert len(body["access_token"]) > 10
 
+    audit = await client.get(
+        "/v1/audit-events?action=auth.login.succeeded&resource_type=auth_session",
+        headers={"Authorization": f"Bearer {body['access_token']}"},
+    )
+    assert audit.status_code == 200
+    assert audit.json()[0]["resource_id"] == "admin"
+    assert audit.json()[0]["metadata"]["demo"] is True
+
 
 @pytest.mark.parametrize(
     ("username", "password"),
@@ -51,6 +59,14 @@ async def test_login_invalid_credentials_returns_401(
         "/auth/token", json={"username": username, "password": password}
     )
     assert response.status_code == 401
+    if username == "admin":
+        audit = await client.get(
+            "/v1/audit-events?action=auth.login.failed&resource_type=auth_session",
+            headers={"Authorization": f"Bearer {_token('admin', 'admin')}"},
+        )
+        assert audit.status_code == 200
+        assert audit.json()[0]["resource_id"] == "admin"
+        assert audit.json()[0]["metadata"]["reason"] == "invalid_credentials"
 
 
 async def test_login_missing_body_returns_422(client: AsyncClient) -> None:
