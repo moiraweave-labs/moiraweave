@@ -12,7 +12,7 @@ import re
 from collections.abc import AsyncGenerator  # noqa: TC003
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -39,6 +39,9 @@ from moiraweave_shared.workloads import (
 from pydantic import ValidationError
 from redis.exceptions import ResponseError
 from starlette.responses import FileResponse, StreamingResponse
+
+if TYPE_CHECKING:
+    from redis.typing import EncodableT
 
 from app.config import Settings, get_settings
 from app.dependencies.auth import AdminUser, CurrentUser, OperatorUser  # noqa: TC001
@@ -3133,10 +3136,15 @@ async def replay_dead_letter_entry(
         )
     await _get_workload(msg.workload_name, control_plane, get_settings())
 
-    replayed_message_id = await redis.xadd(
-        RUN_STREAM,
-        msg.model_dump(exclude_none=True),
-    )
+    replay_payload: dict[EncodableT, EncodableT] = {
+        "run_id": msg.run_id,
+        "workload_name": msg.workload_name,
+        "payload": msg.payload,
+        "user": msg.user,
+    }
+    if msg.workload_manifest is not None:
+        replay_payload["workload_manifest"] = msg.workload_manifest
+    replayed_message_id = await redis.xadd(RUN_STREAM, replay_payload)
     deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
     if not deleted:
         raise HTTPException(
