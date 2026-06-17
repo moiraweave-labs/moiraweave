@@ -65,6 +65,7 @@ from app.models.workloads import (
     DeploymentRequest,
     DeploymentResponse,
     EnvironmentInfo,
+    OperationsAlert,
     PreflightAction,
     PreflightCheck,
     PreflightRequest,
@@ -2505,6 +2506,180 @@ async def create_deployment_operation(
         },
     )
     return _deployment_operation_response(operation)
+
+
+@router.get("/operations/alerts", response_model=list[OperationsAlert])
+async def list_operations_alerts(
+    redis: RedisClient,
+    control_plane: ControlPlane,
+    current_user: CurrentUser,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
+    scope: str = Query(default="mine", pattern="^(mine|all)$"),
+) -> list[OperationsAlert]:
+    if scope == "all" and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires admin role",
+        )
+
+    alerts: list[OperationsAlert] = []
+    try:
+        dead_letter_count = await redis.xlen(DEAD_LETTER_STREAM)
+    except Exception as exc:  # pragma: no cover - defensive runtime guard
+        alerts.append(
+            OperationsAlert(
+                id="redis-dead-letter-unavailable",
+                severity="critical",
+                title="Dead-letter queue cannot be inspected",
+                detail=f"Redis returned an error while reading {DEAD_LETTER_STREAM!r}.",
+                action="Check Redis connectivity from the API gateway.",
+                resource_type="redis",
+                resource_id=DEAD_LETTER_STREAM,
+                command="moira doctor",
+                metadata={"error": str(exc)},
+            )
+        )
+    else:
+        if dead_letter_count:
+            alerts.append(
+                OperationsAlert(
+                    id="dead-letter-messages",
+                    severity="warning",
+                    title="Dead-letter messages need review",
+                    detail=(
+                        f"{dead_letter_count} worker dispatch message(s) are in "
+                        "dead-letter storage."
+                    ),
+                    action=(
+                        "Inspect the failed messages, fix the cause, then replay "
+                        "or purge them."
+                    ),
+                    resource_type="dead_letter",
+                    resource_id=DEAD_LETTER_STREAM,
+                    count=int(dead_letter_count),
+                    command="moira run dead-letter list",
+                )
+            )
+
+    operations = await control_plane.list_deployment_operations(
+        None if scope == "all" else current_user.subject,
+        env=env,
+        limit=200,
+    )
+    queued_ops = [operation for operation in operations if operation.status == "queued"]
+    running_ops = [
+        operation for operation in operations if operation.status == "running"
+    ]
+    if queued_ops:
+        alerts.append(
+            OperationsAlert(
+                id="deployment-operations-queued",
+                severity="warning",
+                title="Deployment operations are waiting",
+                detail=(
+                    f"{len(queued_ops)} deployment operation(s) are queued for "
+                    "a CLI/controller executor."
+                ),
+                action=(
+                    "Start a deployment controller or run the generated CLI "
+                    "commands from a trusted operator workstation."
+                ),
+                resource_type="deployment_operation",
+                env=env,
+                count=len(queued_ops),
+                command="moira deploy operations list --status queued",
+                metadata={
+                    "operation_ids": [
+                        operation.operation_id for operation in queued_ops[:10]
+                    ]
+                },
+            )
+        )
+    if running_ops:
+        alerts.append(
+            OperationsAlert(
+                id="deployment-operations-running",
+                severity="info",
+                title="Deployment operations are running",
+                detail=f"{len(running_ops)} deployment operation(s) are in progress.",
+                action="Watch operation events and confirm the controller heartbeat.",
+                resource_type="deployment_operation",
+                env=env,
+                count=len(running_ops),
+                command="moira deploy operations list --status running",
+                metadata={
+                    "operation_ids": [
+                        operation.operation_id for operation in running_ops[:10]
+                    ]
+                },
+            )
+        )
+
+    runs = await control_plane.list_runs(current_user.subject, limit=200)
+    if env is not None:
+        runs = [
+            run
+            for run in runs
+            if str((run.payload or {}).get("env") or (run.result or {}).get("env") or "")
+            == env
+        ]
+    lost_runs = [run for run in runs if run.status == "lost"]
+    failed_runs = [run for run in runs if run.status == "failed"]
+    cancel_pending_runs = [
+        run for run in runs if run.status in {"cancel_requested", "cancelling"}
+    ]
+    if lost_runs:
+        alerts.append(
+            OperationsAlert(
+                id="runs-lost",
+                severity="critical",
+                title="Runs marked lost",
+                detail=f"{len(lost_runs)} run(s) lost heartbeat or worker ownership.",
+                action="Check worker logs, runtime health, and stale-run recovery.",
+                resource_type="run",
+                env=env,
+                count=len(lost_runs),
+                command="moira run list --status lost",
+                metadata={"run_ids": [run.run_id for run in lost_runs[:10]]},
+            )
+        )
+    if failed_runs:
+        alerts.append(
+            OperationsAlert(
+                id="runs-failed",
+                severity="warning",
+                title="Recent runs failed",
+                detail=f"{len(failed_runs)} recent run(s) ended in failed state.",
+                action="Open run details, inspect events and artifacts, then retry.",
+                resource_type="run",
+                env=env,
+                count=len(failed_runs),
+                command="moira run list --status failed",
+                metadata={"run_ids": [run.run_id for run in failed_runs[:10]]},
+            )
+        )
+    if cancel_pending_runs:
+        alerts.append(
+            OperationsAlert(
+                id="runs-cancel-pending",
+                severity="warning",
+                title="Runs are waiting on cancellation",
+                detail=(
+                    f"{len(cancel_pending_runs)} run(s) are waiting for "
+                    "cooperative cancellation."
+                ),
+                action="Check agent/runtime cancellation support and worker logs.",
+                resource_type="run",
+                env=env,
+                count=len(cancel_pending_runs),
+                command="moira run list --status cancel_requested",
+                metadata={
+                    "run_ids": [run.run_id for run in cancel_pending_runs[:10]]
+                },
+            )
+        )
+
+    return alerts
 
 
 @router.get("/deployment-operations", response_model=list[DeploymentOperationResponse])

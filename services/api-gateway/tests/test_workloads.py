@@ -314,6 +314,48 @@ async def test_dead_letter_purge_missing_entry_returns_404(
     assert resp.status_code == 404
 
 
+async def test_operations_alerts_surface_actionable_issues(
+    auth_client: AsyncClient,
+    fake_redis: FakeRedis,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    submitted = await auth_client.post(
+        "/v1/workloads/hermes/runs",
+        json={"payload": {"prompt": "hello"}},
+    )
+    run_id = submitted.json()["run_id"]
+    await _advance_run(control_plane, run_id, "failed", error="runtime unavailable")
+    await fake_redis.xadd(
+        DEAD_LETTER_STREAM,
+        {
+            "source_stream": RUN_STREAM,
+            "source_id": "1-0",
+            "reason": "runtime_unavailable",
+            "payload": '{"run_id": "bad-run"}',
+        },
+    )
+    operation = await auth_client.post(
+        "/v1/deployment-operations",
+        json={
+            "action": "apply",
+            "workload_name": "hermes",
+            "target": "local",
+            "env": "dev",
+            "executor": "controller",
+        },
+    )
+    assert operation.status_code == 202
+
+    alerts = await auth_client.get("/v1/operations/alerts")
+
+    assert alerts.status_code == 200
+    by_id = {item["id"]: item for item in alerts.json()}
+    assert by_id["dead-letter-messages"]["command"] == "moira run dead-letter list"
+    assert by_id["deployment-operations-queued"]["count"] == 1
+    assert by_id["runs-failed"]["metadata"]["run_ids"] == [run_id]
+
+
 async def test_submit_run_unknown_workload_returns_404(
     auth_client: AsyncClient,
 ) -> None:

@@ -253,6 +253,20 @@ class DeploymentOperationResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class OperationsAlert(BaseModel):
+    id: str
+    severity: str = Field(pattern="^(info|warning|critical)$")
+    title: str
+    detail: str
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    env: str | None = None
+    count: int = 1
+    command: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EnvironmentInfo(BaseModel):
     name: str
     deployment_count: int = 0
