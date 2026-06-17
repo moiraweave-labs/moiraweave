@@ -354,8 +354,6 @@ jobs:
     # Run on every push/PR to main so regressions are caught early.
     permissions:
       contents: read
-    env:
-      E2E_TEST_JWT_SECRET: ${{ secrets.E2E_JWT_SECRET_KEY || 'e2e-local-test-secret-not-for-production' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -370,6 +368,12 @@ jobs:
 
       - name: Install all dependencies (workspace root)
         run: uv sync --frozen --all-packages
+
+      - name: Generate E2E JWT secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "E2E_TEST_JWT_SECRET=$(openssl rand -hex 32)" >>"${GITHUB_ENV}"
 
       - name: Build mock-model image
         env:
