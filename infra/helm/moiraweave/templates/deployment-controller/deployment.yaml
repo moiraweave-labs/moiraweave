@@ -2,6 +2,8 @@
 {{- $apiUrl := default (printf "http://%s" (include "moiraweave.apiGateway.fullname" .)) .Values.deploymentController.apiUrl -}}
 {{- $namespace := default .Release.Namespace .Values.deploymentController.namespace -}}
 {{- $controllerId := default (include "moiraweave.deploymentController.fullname" .) .Values.deploymentController.controllerId -}}
+{{- $tokenSecret := required "deploymentController.auth.existingSecret is required when deploymentController.enabled=true" .Values.deploymentController.auth.existingSecret -}}
+{{- $tokenKey := required "deploymentController.auth.tokenKey is required when deploymentController.enabled=true" .Values.deploymentController.auth.tokenKey -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,8 +57,8 @@ spec:
             - name: MOIRA_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.deploymentController.auth.existingSecret }}
-                  key: {{ .Values.deploymentController.auth.tokenKey }}
+                  name: {{ $tokenSecret }}
+                  key: {{ $tokenKey }}
             {{- with .Values.deploymentController.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -89,8 +89,7 @@ def test_sample_managed_agents_have_unique_services_and_ports() -> None:
     ]
 
     service_names = [
-        workload.get("deployment", {}).get("serviceName")
-        for workload in managed_agents
+        workload.get("deployment", {}).get("serviceName") for workload in managed_agents
     ]
     ports = [
         port["port"]
@@ -140,6 +139,8 @@ def test_deployment_controller_template_runs_cli_controller() -> None:
     assert "- --repo-root" in template
     assert "- /workspace" in template
     assert "secretKeyRef:" in template
+    assert "deploymentController.auth.existingSecret is required" in template
+    assert "deploymentController.auth.tokenKey is required" in template
     assert "MOIRA_TOKEN" in template
 
 
