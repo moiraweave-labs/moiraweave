@@ -859,6 +859,14 @@ def _operation_lease_expiry(now: str, lease_seconds: int) -> str:
     return (_parse_utc_timestamp(now) + timedelta(seconds=lease_seconds)).isoformat()
 
 
+def _pending_stream_count(info: Any) -> int:
+    if isinstance(info, dict):
+        return int(info.get("pending") or 0)
+    if isinstance(info, (list, tuple)) and info:
+        return int(info[0] or 0)
+    return 0
+
+
 def _deployment_operation_lease_expired(operation: Any, now: str) -> bool:
     if not operation.lease_expires_at:
         return False
@@ -2809,6 +2817,50 @@ async def list_operations_alerts(
                     command="moira run dead-letter list",
                 )
             )
+
+    try:
+        pending_info = await redis.xpending(RUN_STREAM, CONSUMER_GROUP)
+    except (IndexError, ResponseError) as exc:
+        if isinstance(exc, IndexError) or "NOGROUP" in str(exc):
+            pending_count = 0
+        else:  # pragma: no cover - defensive runtime guard
+            alerts.append(
+                OperationsAlert(
+                    id="redis-pending-unavailable",
+                    severity="critical",
+                    title="Run dispatch pending state cannot be inspected",
+                    detail=f"Redis returned an error while reading {RUN_STREAM!r}.",
+                    action="Check Redis connectivity and worker consumer group state.",
+                    resource_type="redis",
+                    resource_id=RUN_STREAM,
+                    command="moira doctor",
+                    metadata={"error": str(exc)},
+                )
+            )
+            pending_count = 0
+    else:
+        pending_count = _pending_stream_count(pending_info)
+    if pending_count:
+        alerts.append(
+            OperationsAlert(
+                id="run-dispatch-pending-reclaim",
+                severity="warning",
+                title="Run dispatch messages are pending",
+                detail=(
+                    f"{pending_count} Redis Stream message(s) are pending worker "
+                    "acknowledgement."
+                ),
+                action=(
+                    "Check worker health and reclaim settings; healthy workers "
+                    "will reclaim abandoned queued/cancel-pending runs."
+                ),
+                resource_type="redis_stream",
+                resource_id=RUN_STREAM,
+                count=pending_count,
+                command="moira doctor",
+                metadata={"stream": RUN_STREAM, "consumer_group": CONSUMER_GROUP},
+            )
+        )
 
     operations = (
         await control_plane.list_deployment_operations(None, env=env, limit=200)

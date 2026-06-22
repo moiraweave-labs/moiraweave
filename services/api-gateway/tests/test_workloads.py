@@ -341,6 +341,14 @@ async def test_operations_alerts_surface_actionable_issues(
             "payload": '{"run_id": "bad-run"}',
         },
     )
+    await fake_redis.xgroup_create(RUN_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
+    await fake_redis.xadd(RUN_STREAM, {"run_id": "pending-run"})
+    await fake_redis.xreadgroup(
+        CONSUMER_GROUP,
+        "worker-stuck",
+        streams={RUN_STREAM: ">"},
+        count=1,
+    )
     operation = await auth_client.post(
         "/v1/deployment-operations",
         json={
@@ -358,6 +366,7 @@ async def test_operations_alerts_surface_actionable_issues(
     assert alerts.status_code == 200
     by_id = {item["id"]: item for item in alerts.json()}
     assert by_id["dead-letter-messages"]["command"] == "moira run dead-letter list"
+    assert by_id["run-dispatch-pending-reclaim"]["count"] == 1
     assert by_id["deployment-operations-queued"]["count"] == 1
     assert by_id["runs-failed"]["metadata"]["run_ids"] == [run_id]
 
