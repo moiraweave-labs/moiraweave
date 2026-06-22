@@ -2982,6 +2982,11 @@ async def list_operations_alerts(
     cancel_pending_runs = [
         run for run in runs if run.status in {"cancel_requested", "cancelling"}
     ]
+    duplicate_ack_events: list[tuple[str, str]] = []
+    for run in runs:
+        for event in await control_plane.list_run_events(run.run_id):
+            if event.type == "run.duplicate_ignored":
+                duplicate_ack_events.append((run.run_id, event.id))
     if lost_runs:
         alerts.append(
             OperationsAlert(
@@ -3028,6 +3033,31 @@ async def list_operations_alerts(
                 count=len(cancel_pending_runs),
                 command="moira run list --status cancel_requested",
                 metadata={"run_ids": [run.run_id for run in cancel_pending_runs[:10]]},
+            )
+        )
+    if duplicate_ack_events:
+        run_ids = list(dict.fromkeys(run_id for run_id, _ in duplicate_ack_events))
+        alerts.append(
+            OperationsAlert(
+                id="run-dispatch-duplicate-acks",
+                severity="info",
+                title="Duplicate run dispatches acknowledged",
+                detail=(
+                    f"{len(duplicate_ack_events)} duplicate dispatch message(s) "
+                    "were acknowledged without re-executing active runs."
+                ),
+                action=(
+                    "Inspect run events and worker logs if this grows; active "
+                    "runs are protected from duplicate execution."
+                ),
+                resource_type="run_event",
+                env=env,
+                count=len(duplicate_ack_events),
+                command=f"moira run events {run_ids[0]}",
+                metadata={
+                    "run_ids": run_ids[:10],
+                    "event_ids": [event_id for _, event_id in duplicate_ack_events[:10]],
+                },
             )
         )
 

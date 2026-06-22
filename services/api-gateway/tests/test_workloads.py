@@ -332,6 +332,18 @@ async def test_operations_alerts_surface_actionable_issues(
     )
     run_id = submitted.json()["run_id"]
     await _advance_run(control_plane, run_id, "failed", error="runtime unavailable")
+    duplicate = await auth_client.post(
+        "/v1/workloads/hermes/runs",
+        json={"payload": {"prompt": "duplicate"}},
+    )
+    duplicate_run_id = duplicate.json()["run_id"]
+    await _advance_run(control_plane, duplicate_run_id, "running")
+    await control_plane.append_run_event(
+        duplicate_run_id,
+        "run.duplicate_ignored",
+        "Duplicate dispatch message ignored because run is already active",
+        data={"message_id": "2-0"},
+    )
     await fake_redis.xadd(
         DEAD_LETTER_STREAM,
         {
@@ -367,6 +379,10 @@ async def test_operations_alerts_surface_actionable_issues(
     by_id = {item["id"]: item for item in alerts.json()}
     assert by_id["dead-letter-messages"]["command"] == "moira run dead-letter list"
     assert by_id["run-dispatch-pending-reclaim"]["count"] == 1
+    assert by_id["run-dispatch-duplicate-acks"]["count"] == 1
+    assert by_id["run-dispatch-duplicate-acks"]["metadata"]["run_ids"] == [
+        duplicate_run_id
+    ]
     assert by_id["deployment-operations-queued"]["count"] == 1
     assert by_id["runs-failed"]["metadata"]["run_ids"] == [run_id]
 
