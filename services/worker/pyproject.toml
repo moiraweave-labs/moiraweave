@@ -7,7 +7,7 @@ dependencies = [
     "moiraweave-shared",
     "redis[hiredis]>=7.4.0",
     "asyncpg>=0.30",
-    "pydantic-settings>=2.14.1",
+    "pydantic-settings>=2.14.2",
     # Qdrant vector store (RAG/search workloads)
     "qdrant-client[fastembed]>=1.12",
     # Prometheus metrics server
