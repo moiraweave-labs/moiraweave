@@ -126,6 +126,28 @@ def test_deployment_controller_values_define_disabled_secure_default() -> None:
     assert controller["auth"]["tokenKey"] == "MOIRA_TOKEN"
 
 
+def test_staging_and_prod_overlays_disable_demo_auth_and_enable_network_policy() -> None:
+    staging = _read_yaml("infra/helm/moiraweave/values-staging.yaml")
+    prod = _read_yaml("infra/helm/moiraweave/values-prod.yaml")
+
+    for values in (staging, prod):
+        extra_env = {
+            item["name"]: str(item["value"])
+            for item in values["apiGateway"].get("extraEnv", [])
+        }
+        assert extra_env["DEMO_AUTH_ENABLED"] == "false"
+        assert values["networkPolicy"]["enabled"] is True
+        assert values["redis"]["auth"]["enabled"] is True
+        assert values["redis"]["auth"]["existingSecret"] == "moiraweave-secrets"
+        assert (
+            values["redis"]["auth"]["existingSecretPasswordKey"] == "REDIS_PASSWORD"
+        )
+
+    assert prod["apiGateway"]["hpa"]["enabled"] is True
+    assert prod["apiGateway"]["pdb"]["enabled"] is True
+    assert prod["worker"]["pdb"]["enabled"] is True
+
+
 def test_deployment_controller_template_runs_cli_controller() -> None:
     template = _read_text(
         "infra/helm/moiraweave/templates/deployment-controller/deployment.yaml"
