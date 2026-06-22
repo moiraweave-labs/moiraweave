@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 from alembic import op
 
-from moiraweave_shared.control_plane import CONTROL_PLANE_MIGRATIONS
+from moiraweave_shared.alembic.control_plane_schema import CONTROL_PLANE_MIGRATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from moiraweave_shared.control_plane import (
     InMemoryControlPlaneRepository,
     StoredRun,
@@ -20,6 +21,7 @@ import app.run_consumer as run_consumer_module
 from app.agent_adapters import HttpAgentAdapter
 from app.run_consumer import (
     _ensure_consumer_group,
+    _is_retryable_executor_error,
     _process_message,
     mark_stale_runs,
     reclaim_pending_runs,
@@ -191,6 +193,81 @@ async def test_process_message_retries_transient_executor_failure(
     assert retries == ["agent"]
     assert any(event.type == "run.retry" for event in events)
     assert any(event.type == "run.retrying" for event in events)
+
+
+async def test_process_message_does_not_retry_non_retryable_executor_failure(
+    fake_redis: Any,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls = 0
+    retries: list[str] = []
+
+    async def invalid_payload(
+        self: HttpAgentAdapter, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        nonlocal calls
+        del self, payload
+        calls += 1
+        raise ValueError("adapter payload is invalid")
+
+    monkeypatch.setattr(HttpAgentAdapter, "send_message", invalid_payload)
+    monkeypatch.setattr(run_consumer_module, "record_run_retry", retries.append)
+    await _ensure_consumer_group(fake_redis)
+    control_plane = InMemoryControlPlaneRepository()
+    workload = _agent_workload()
+    await control_plane.upsert_workload(workload, "user")
+    await control_plane.create_run(
+        "run-no-retry",
+        "agent",
+        {"message": "hello"},
+        "user",
+        created_at=utc_now_iso(),
+    )
+    msg = RunMessage(
+        run_id="run-no-retry",
+        workload_name="agent",
+        payload=json.dumps({"message": "hello"}),
+        user="user",
+    ).model_dump(mode="python", exclude_none=True)
+
+    await _process_message(
+        fake_redis,
+        control_plane,
+        "1-0",
+        msg,
+        workloads_dir=tmp_path,
+        heartbeat_interval_seconds=0.01,
+        run_retry_attempts=3,
+        run_retry_backoff_seconds=0.0,
+    )
+
+    run = await control_plane.get_run("run-no-retry")
+    events = await control_plane.list_run_events("run-no-retry")
+
+    assert calls == 1
+    assert run is not None
+    assert run.status == "failed"
+    assert retries == []
+    assert any(event.type == "run.retry_skipped" for event in events)
+    assert not any(event.type == "run.retry" for event in events)
+
+
+def test_retry_classifier_distinguishes_transient_http_statuses() -> None:
+    request = httpx.Request("POST", "http://agent/messages")
+    retryable = httpx.HTTPStatusError(
+        "service unavailable",
+        request=request,
+        response=httpx.Response(503, request=request),
+    )
+    non_retryable = httpx.HTTPStatusError(
+        "bad request",
+        request=request,
+        response=httpx.Response(400, request=request),
+    )
+
+    assert _is_retryable_executor_error(retryable)
+    assert not _is_retryable_executor_error(non_retryable)
 
 
 async def test_active_duplicate_message_is_acknowledged_without_reexecution(

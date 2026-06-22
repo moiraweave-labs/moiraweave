@@ -9,6 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from moiraweave_shared.control_plane import (
     ControlPlaneRepository,
     utc_now_iso,
@@ -42,6 +43,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 RECOVERABLE_PENDING_RUN_STATUSES = {"queued", "cancel_requested"}
 PROCESSABLE_RUN_STATUSES = {"queued", "cancel_requested"}
+RETRYABLE_HTTP_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
+RETRYABLE_RUNTIME_ERROR_HINTS = (
+    "connection",
+    "temporarily",
+    "timeout",
+    "timed out",
+    "transient",
+    "unavailable",
+    "warming up",
+)
 
 
 async def _ensure_consumer_group(redis: Redis) -> None:
@@ -205,6 +216,19 @@ async def _execute_with_retries(
         except RunCancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            retryable = _is_retryable_executor_error(exc)
+            if not retryable:
+                await emit(
+                    "run.retry_skipped",
+                    "Run failed with a non-retryable executor error",
+                    data={
+                        "attempt": attempt,
+                        "max_attempts": attempts,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
             if attempt >= attempts:
                 raise
             await emit(
@@ -223,6 +247,25 @@ async def _execute_with_retries(
                 raise RunCancelledError("Run canceled before retry") from exc
 
     raise RuntimeError("Run retry loop exited without a result")
+
+
+def _is_retryable_executor_error(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in RETRYABLE_HTTP_STATUSES
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            httpx.TimeoutException,
+            httpx.TransportError,
+            ConnectionError,
+        ),
+    ):
+        return True
+    if isinstance(exc, RuntimeError):
+        message = str(exc).lower()
+        return any(hint in message for hint in RETRYABLE_RUNTIME_ERROR_HINTS)
+    return False
 
 
 async def _is_cancel_requested(
