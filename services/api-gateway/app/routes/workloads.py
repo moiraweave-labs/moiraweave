@@ -95,6 +95,11 @@ from app.models.workloads import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["workloads"])
 
+_RATE_LIMIT_CONTROLLER_MUTATION = "60/minute"
+_RATE_LIMIT_DEAD_LETTER_MUTATION = "20/minute"
+_RATE_LIMIT_DEPLOYMENT_OPERATION = "30/minute"
+_RATE_LIMIT_WEBHOOK_INGRESS = "60/minute"
+
 _PREVIEWABLE_CONTENT_TYPES = {
     "application/json",
     "application/ld+json",
@@ -2611,11 +2616,14 @@ async def list_audit_events(
     response_model=DeploymentOperationResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit(_RATE_LIMIT_DEPLOYMENT_OPERATION)
 async def create_deployment_operation(
+    request: Request,
     body: DeploymentOperationRequest,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeploymentOperationResponse:
+    del request
     settings = get_settings()
     normalized_target = "kubernetes" if body.target == "k8s" else body.target
     operation_id = str(uuid4())
@@ -3165,12 +3173,15 @@ async def list_deployment_operation_events(
     "/deployment-operations/{operation_id}/claim",
     response_model=DeploymentOperationResponse,
 )
+@limiter.limit(_RATE_LIMIT_CONTROLLER_MUTATION)
 async def claim_deployment_operation(
+    request: Request,
     operation_id: str,
     body: DeploymentOperationClaimRequest,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeploymentOperationResponse:
+    del request
     operation = await control_plane.get_deployment_operation(operation_id)
     if operation is None:
         raise HTTPException(
@@ -3255,12 +3266,15 @@ async def claim_deployment_operation(
     "/deployment-operations/{operation_id}/heartbeat",
     response_model=DeploymentOperationResponse,
 )
+@limiter.limit(_RATE_LIMIT_CONTROLLER_MUTATION)
 async def heartbeat_deployment_operation(
+    request: Request,
     operation_id: str,
     body: DeploymentOperationHeartbeatRequest,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeploymentOperationResponse:
+    del request
     operation = await control_plane.get_deployment_operation(operation_id)
     if operation is None:
         raise HTTPException(
@@ -3338,12 +3352,15 @@ async def heartbeat_deployment_operation(
     response_model=DeploymentOperationEvent,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(_RATE_LIMIT_CONTROLLER_MUTATION)
 async def append_deployment_operation_event(
+    request: Request,
     operation_id: str,
     body: DeploymentOperationEventRequest,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeploymentOperationEvent:
+    del request
     operation = await control_plane.get_deployment_operation(operation_id)
     if operation is None:
         raise HTTPException(
@@ -3369,12 +3386,15 @@ async def append_deployment_operation_event(
     "/deployment-operations/{operation_id}/complete",
     response_model=DeploymentOperationResponse,
 )
+@limiter.limit(_RATE_LIMIT_CONTROLLER_MUTATION)
 async def complete_deployment_operation(
+    request: Request,
     operation_id: str,
     body: DeploymentOperationCompleteRequest,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeploymentOperationResponse:
+    del request
     operation = await control_plane.get_deployment_operation(operation_id)
     if operation is None:
         raise HTTPException(
@@ -3553,12 +3573,15 @@ async def list_dead_letter_entries(
 
 
 @router.delete("/runs/dead-letter/{message_id}", response_model=DeadLetterEntry)
+@limiter.limit(_RATE_LIMIT_DEAD_LETTER_MUTATION)
 async def purge_dead_letter_entry(
+    request: Request,
     message_id: str,
     redis: RedisClient,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeadLetterEntry:
+    del request
     entries = await redis.xrange(
         DEAD_LETTER_STREAM,
         min=message_id,
@@ -3598,12 +3621,15 @@ async def purge_dead_letter_entry(
     response_model=DeadLetterReplayResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit(_RATE_LIMIT_DEAD_LETTER_MUTATION)
 async def replay_dead_letter_entry(
+    request: Request,
     message_id: str,
     redis: RedisClient,
     control_plane: ControlPlane,
     current_user: OperatorUser,
 ) -> DeadLetterReplayResponse:
+    del request
     entries = await redis.xrange(
         DEAD_LETTER_STREAM,
         min=message_id,
@@ -4107,6 +4133,7 @@ async def post_channel_agent_message(
     response_model=AgentMessageResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit(_RATE_LIMIT_WEBHOOK_INGRESS)
 async def post_signed_webhook_agent_message(
     channel: str,
     name: str,

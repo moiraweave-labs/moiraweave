@@ -43,6 +43,7 @@ router = APIRouter(tags=["auth"])
 # Using a literal here avoids calling get_settings() at module import time,
 # which would bypass the DI system and break test overrides.
 _RATE_LIMIT_AUTH = "10/minute"
+_RATE_LIMIT_SECURITY_MUTATION = "30/minute"
 _PASSWORD_HASH_ITERATIONS = 210_000
 
 
@@ -394,13 +395,16 @@ async def list_api_keys(
     status_code=status.HTTP_201_CREATED,
     summary="Create API key",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def create_api_key(
+    request: Request,
     body: ApiKeyCreateRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> ApiKeyCreateResponse:
     """Create a hashed API key and return the secret once."""
 
+    del request
     if (
         body.team_id is not None
         and await _find_team(control_plane, body.team_id) is None
@@ -439,13 +443,16 @@ async def create_api_key(
     status_code=status.HTTP_201_CREATED,
     summary="Rotate API key",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def rotate_api_key(
+    request: Request,
     key_id: str,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> ApiKeyCreateResponse:
     """Create a replacement API key and revoke the previous active key."""
 
+    del request
     existing = await _find_api_key(control_plane, key_id)
     if existing is None:
         raise HTTPException(
@@ -491,13 +498,16 @@ async def rotate_api_key(
     response_model=ApiKeyResponse,
     summary="Revoke API key",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def revoke_api_key(
+    request: Request,
     key_id: str,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> ApiKeyResponse:
     """Revoke an API key without deleting its audit-relevant metadata."""
 
+    del request
     revoked = await control_plane.revoke_api_key(key_id, revoked_at=utc_now_iso())
     if revoked is None:
         raise HTTPException(
@@ -533,11 +543,14 @@ async def list_users(
     status_code=status.HTTP_201_CREATED,
     summary="Create or replace user credentials",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def upsert_user(
+    request: Request,
     body: UserCreateRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> UserResponse:
+    del request
     user = await control_plane.upsert_user(
         body.subject,
         _hash_password(body.password),
@@ -562,12 +575,15 @@ async def upsert_user(
     response_model=UserResponse,
     summary="Update user metadata",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def update_user(
+    request: Request,
     subject: str,
     body: UserUpdateRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> UserResponse:
+    del request
     if body.role is None and body.display_name is None:
         raise HTTPException(status_code=400, detail="No user changes supplied")
     updated = await control_plane.update_user(
@@ -594,12 +610,15 @@ async def update_user(
     response_model=UserResponse,
     summary="Change own password",
 )
+@limiter.limit(_RATE_LIMIT_AUTH)
 async def change_user_password(
+    request: Request,
     subject: str,
     body: UserPasswordChangeRequest,
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> UserResponse:
+    del request
     if subject != current_user.subject:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -633,12 +652,15 @@ async def change_user_password(
     response_model=UserResponse,
     summary="Reset user password as admin",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def reset_user_password(
+    request: Request,
     subject: str,
     body: UserPasswordResetRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> UserResponse:
+    del request
     updated = await control_plane.update_user(
         subject,
         password_hash=_hash_password(body.new_password),
@@ -662,11 +684,14 @@ async def reset_user_password(
     response_model=UserResponse,
     summary="Disable user",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def disable_user(
+    request: Request,
     subject: str,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> UserResponse:
+    del request
     disabled = await control_plane.disable_user(subject, disabled_at=utc_now_iso())
     if disabled is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -686,11 +711,14 @@ async def disable_user(
     response_model=UserResponse,
     summary="Enable user",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def enable_user(
+    request: Request,
     subject: str,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> UserResponse:
+    del request
     enabled = await control_plane.enable_user(subject, updated_at=utc_now_iso())
     if enabled is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -720,11 +748,14 @@ async def list_teams(
     status_code=status.HTTP_201_CREATED,
     summary="Create or update team",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def upsert_team(
+    request: Request,
     body: TeamCreateRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> TeamResponse:
+    del request
     team = await control_plane.upsert_team(
         body.team_id,
         body.name,
@@ -748,12 +779,15 @@ async def upsert_team(
     response_model=TeamResponse,
     summary="Update team metadata",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def update_team(
+    request: Request,
     team_id: str,
     body: TeamUpdateRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> TeamResponse:
+    del request
     if body.name is None and body.description is None:
         raise HTTPException(status_code=400, detail="No team changes supplied")
     team = await control_plane.update_team(
@@ -798,12 +832,15 @@ async def list_team_members(
     status_code=status.HTTP_201_CREATED,
     summary="Add or update team member",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def add_team_member(
+    request: Request,
     team_id: str,
     body: TeamMemberRequest,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> TeamMemberResponse:
+    del request
     if await _find_team(control_plane, team_id) is None:
         raise HTTPException(status_code=404, detail="Team not found")
     if await control_plane.get_user(body.subject) is None:
@@ -831,12 +868,15 @@ async def add_team_member(
     response_model=TeamMemberResponse,
     summary="Remove team member",
 )
+@limiter.limit(_RATE_LIMIT_SECURITY_MUTATION)
 async def remove_team_member(
+    request: Request,
     team_id: str,
     subject: str,
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> TeamMemberResponse:
+    del request
     member = await control_plane.remove_team_member(team_id, subject)
     if member is None:
         raise HTTPException(status_code=404, detail="Team member not found")

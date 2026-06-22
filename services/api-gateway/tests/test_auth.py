@@ -4,7 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
-from httpx import AsyncClient
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 
 from app.config import get_settings
 
@@ -72,6 +73,28 @@ async def test_login_invalid_credentials_returns_401(
 async def test_login_missing_body_returns_422(client: AsyncClient) -> None:
     response = await client.post("/auth/token", json={})
     assert response.status_code == 422
+
+
+async def test_login_is_rate_limited(
+    client: AsyncClient,
+    api_app: FastAPI,
+) -> None:
+    del client
+    statuses: list[int] = []
+
+    async with AsyncClient(
+        transport=ASGITransport(app=api_app, client=("203.0.113.9", 123)),
+        base_url="http://test",
+    ) as limited_client:
+        for _ in range(11):
+            response = await limited_client.post(
+                "/auth/token",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            statuses.append(response.status_code)
+
+    assert statuses[:10] == [401] * 10
+    assert statuses[10] == 429
 
 
 async def test_demo_auth_can_be_disabled_without_blocking_stored_users(
@@ -270,6 +293,34 @@ async def test_admin_can_create_use_and_revoke_persistent_api_key(
     )
     actions = {event["action"] for event in audit.json()}
     assert {"api_key.create", "api_key.revoke"} <= actions
+
+
+async def test_api_key_creation_is_rate_limited(
+    client: AsyncClient,
+    api_app: FastAPI,
+) -> None:
+    del client
+    admin_token = _token("admin", "admin")
+    statuses: list[int] = []
+
+    async with AsyncClient(
+        transport=ASGITransport(app=api_app, client=("203.0.113.10", 123)),
+        base_url="http://test",
+    ) as limited_client:
+        for index in range(31):
+            response = await limited_client.post(
+                "/auth/api-keys",
+                json={
+                    "name": f"limited-{index}",
+                    "subject": f"limited-{index}",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            statuses.append(response.status_code)
+
+    assert statuses[:30] == [201] * 30
+    assert statuses[30] == 429
 
 
 async def test_admin_can_rotate_persistent_api_key(

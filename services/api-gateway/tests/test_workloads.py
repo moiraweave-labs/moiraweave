@@ -58,6 +58,29 @@ async def _register(
     return resp.json()
 
 
+async def _rate_limited_statuses(
+    api_app: Any,
+    *,
+    ip: str,
+    method: str,
+    url: str,
+    count: int,
+    **kwargs: Any,
+) -> list[int]:
+    from httpx import ASGITransport, AsyncClient
+
+    statuses: list[int] = []
+    async with AsyncClient(
+        transport=ASGITransport(app=api_app, client=(ip, 123)),
+        base_url="http://test",
+    ) as limited_client:
+        request = getattr(limited_client, method)
+        for _ in range(count):
+            response = await request(url, **kwargs)
+            statuses.append(response.status_code)
+    return statuses
+
+
 async def _advance_run(
     control_plane: InMemoryControlPlaneRepository,
     run_id: str,
@@ -310,6 +333,24 @@ async def test_dead_letter_entry_can_be_replayed(
     )
     assert audit.status_code == 200
     assert audit.json()[0]["resource_id"] == msg_id
+
+
+async def test_dead_letter_replay_is_rate_limited(
+    auth_client: AsyncClient,
+    api_app: Any,
+) -> None:
+    del auth_client
+
+    statuses = await _rate_limited_statuses(
+        api_app,
+        ip="203.0.113.29",
+        method="post",
+        url="/v1/runs/dead-letter/0-0/replay",
+        count=21,
+    )
+
+    assert statuses[:20] == [404] * 20
+    assert statuses[20] == 429
 
 
 async def test_dead_letter_purge_missing_entry_returns_404(
@@ -1497,6 +1538,25 @@ async def test_deployment_operation_can_be_reclaimed_after_expired_lease(
     assert events.json()[-1]["type"] == "operation.reclaimed"
 
 
+async def test_deployment_controller_claim_is_rate_limited(
+    auth_client: AsyncClient,
+    api_app: Any,
+) -> None:
+    del auth_client
+
+    statuses = await _rate_limited_statuses(
+        api_app,
+        ip="203.0.113.30",
+        method="post",
+        url="/v1/deployment-operations/missing/claim",
+        count=61,
+        json={"controller_id": "controller-limited"},
+    )
+
+    assert statuses[:60] == [404] * 60
+    assert statuses[60] == 429
+
+
 async def test_deployment_operation_undeploy_returns_guidance(
     auth_client: AsyncClient,
 ) -> None:
@@ -1703,6 +1763,43 @@ async def test_webhook_message_rejects_invalid_signature(
     )
 
     assert resp.status_code == 401
+
+
+async def test_webhook_ingress_is_rate_limited(
+    auth_client: AsyncClient,
+    api_app: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "webhook-rate-limit-secret")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    manifest = _agent_manifest()
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
+    assert (await auth_client.post("/v1/workloads", json=manifest)).status_code == 201
+    payload = {
+        "external_user_id": "webhook-rate-limited",
+        "message": "limited webhook",
+    }
+    raw_payload = json.dumps(payload).encode()
+    signature = hmac.new(b"webhook-rate-limit-secret", raw_payload, sha256).hexdigest()
+
+    statuses = await _rate_limited_statuses(
+        api_app,
+        ip="203.0.113.31",
+        method="post",
+        url="/v1/webhooks/webhook/agents/hermes/messages",
+        count=61,
+        content=raw_payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={signature}",
+        },
+    )
+
+    assert statuses[:60] == [202] * 60
+    assert statuses[60] == 429
+    get_settings.cache_clear()
 
 
 async def test_duplicate_agent_messages_keep_distinct_run_links(
