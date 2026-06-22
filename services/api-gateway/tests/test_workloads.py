@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hmac
 import json
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
+import jwt
 from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
 
+from app.config import get_settings
 from app.models.workloads import DeploymentResponse
 from app.routes.workloads import _deployment_probe_url, _probe_deployment_endpoint
 
@@ -47,6 +50,19 @@ def _deployment_response(endpoint: str | None = None) -> DeploymentResponse:
         created_at="2026-01-01T00:00:00+00:00",
         endpoint=endpoint,
         metadata={},
+    )
+
+
+def _token(subject: str, role: str) -> str:
+    settings = get_settings()
+    return jwt.encode(
+        {
+            "sub": subject,
+            "role": role,
+            "exp": datetime.now(UTC) + timedelta(minutes=5),
+        },
+        settings.jwt_secret_key.get_secret_value(),
+        algorithm=settings.jwt_algorithm,
     )
 
 
@@ -650,6 +666,166 @@ async def test_artifact_library_filters_by_workload_session_and_type(
     assert resp.json()[0]["name"] == "trace.json"
     assert resp.json()[0]["workload_name"] == "hermes"
     assert resp.json()[0]["session_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+async def test_team_scope_covers_sessions_artifacts_deployments_operations_and_audit(
+    client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    admin_token = _token("admin", "admin")
+    manifest = _agent_manifest("scope-agent")
+    manifest["spec"]["secrets"] = []
+    assert (
+        await client.post(
+            "/v1/workloads",
+            json=manifest,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    for subject in ["alice", "charlie", "bob"]:
+        assert (
+            await client.post(
+                "/auth/users",
+                json={
+                    "subject": subject,
+                    "password": "correct-horse",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+    for team_id, name, members in [
+        ("agents-a", "Agents A", ["alice", "charlie"]),
+        ("agents-b", "Agents B", ["bob"]),
+    ]:
+        assert (
+            await client.post(
+                "/auth/teams",
+                json={"team_id": team_id, "name": name},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+        for member in members:
+            assert (
+                await client.post(
+                    f"/auth/teams/{team_id}/members",
+                    json={"subject": member, "role": "operator"},
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+            ).status_code == 201
+
+    run_ids: dict[str, str] = {}
+    for subject in ["alice", "charlie", "bob"]:
+        token = _token(subject, "operator")
+        run = await client.post(
+            "/v1/workloads/scope-agent/runs",
+            json={"payload": {"owner": subject}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert run.status_code == 202
+        run_ids[subject] = run.json()["run_id"]
+        await control_plane.record_artifact(
+            run_ids[subject],
+            {
+                "id": f"artifact-{subject}",
+                "name": f"{subject}.txt",
+                "uri": f"file:///{subject}.txt",
+                "content_type": "text/plain",
+                "metadata": {"owner": subject},
+            },
+        )
+        session = await client.post(
+            "/v1/agents/scope-agent/sessions",
+            json={"metadata": {"owner": subject}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert session.status_code == 201
+        deployment = await client.post(
+            "/v1/workloads/scope-agent/deployments",
+            json={
+                "target": "local",
+                "env": "scope",
+                "status": "applied",
+                "metadata": {"owner": subject},
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert deployment.status_code == 201
+        operation = await client.post(
+            "/v1/deployment-operations",
+            json={
+                "action": "logs",
+                "workload_name": "scope-agent",
+                "target": "local",
+                "env": "scope",
+                "metadata": {"owner": subject},
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert operation.status_code == 202
+
+    alice_token = _token("alice", "operator")
+    bob_token = _token("bob", "operator")
+    alice_sessions = await client.get(
+        "/v1/agents/scope-agent/sessions",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    alice_artifacts = await client.get(
+        "/v1/artifacts?workload_name=scope-agent",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    alice_deployments = await client.get(
+        "/v1/deployments?workload_name=scope-agent&env=scope",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    alice_operations = await client.get(
+        "/v1/deployment-operations?workload_name=scope-agent&env=scope",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    alice_audit = await client.get(
+        "/v1/audit-events?action=deployment_operation.logs",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    bob_artifacts = await client.get(
+        "/v1/artifacts?workload_name=scope-agent",
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+    admin_operations = await client.get(
+        "/v1/deployment-operations?workload_name=scope-agent&env=scope",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert alice_sessions.status_code == 200
+    assert {item["metadata"]["owner"] for item in alice_sessions.json()} == {
+        "alice",
+        "charlie",
+    }
+    assert alice_artifacts.status_code == 200
+    assert {item["metadata"]["owner"] for item in alice_artifacts.json()} == {
+        "alice",
+        "charlie",
+    }
+    assert bob_artifacts.status_code == 200
+    assert {item["metadata"]["owner"] for item in bob_artifacts.json()} == {"bob"}
+    assert alice_deployments.status_code == 200
+    assert {item["metadata"]["owner"] for item in alice_deployments.json()} == {
+        "alice",
+        "charlie",
+    }
+    assert alice_operations.status_code == 200
+    assert {item["metadata"]["owner"] for item in alice_operations.json()} == {
+        "alice",
+        "charlie",
+    }
+    assert alice_audit.status_code == 200
+    assert {item["actor"] for item in alice_audit.json()} == {"alice", "charlie"}
+    assert admin_operations.status_code == 200
+    assert {item["metadata"]["owner"] for item in admin_operations.json()} == {
+        "alice",
+        "charlie",
+        "bob",
+    }
 
 
 async def test_artifact_preview_and_download_from_local_storage(
