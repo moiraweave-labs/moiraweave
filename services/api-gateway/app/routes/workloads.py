@@ -3056,7 +3056,9 @@ async def list_operations_alerts(
                 command=f"moira run events {run_ids[0]}",
                 metadata={
                     "run_ids": run_ids[:10],
-                    "event_ids": [event_id for _, event_id in duplicate_ack_events[:10]],
+                    "event_ids": [
+                        event_id for _, event_id in duplicate_ack_events[:10]
+                    ],
                 },
             )
         )
