@@ -5,7 +5,7 @@ description = "MoiraWeave async inference worker (Redis Streams consumer)"
 requires-python = ">=3.13"
 dependencies = [
     "moiraweave-shared",
-    "redis[hiredis]>=7.4.0",
+    "redis[hiredis]>=8.0.0",
     "asyncpg>=0.30",
     "pydantic-settings>=2.14.1",
     # Qdrant vector store (RAG/search workloads)
