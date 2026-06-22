@@ -37,7 +37,7 @@ TF_AWS_DIR   ?= infra/terraform/envs/aws
 TF_GCP_DIR   ?= infra/terraform/envs/gcp
 
 .PHONY: help install lock lint lint-fix format typecheck test test-fast \
-        test-real-agents test-e2e test-e2e-up test-e2e-down ci \
+        test-real-agents test-e2e test-kind-controller test-e2e-up test-e2e-down ci \
         pre-commit-install pre-commit-run \
         up up-mlops up-all down logs ps build \
         kind-up kind-status kind-down \
@@ -101,6 +101,13 @@ test-real-agents:  ## Run optional live Hermes/OpenClaw adapter certification te
 	@echo "==> Running optional live Hermes/OpenClaw adapter tests..."
 	@echo "    Set MOIRAWEAVE_REAL_AGENT_TESTS=1 plus runtime URL env vars to hit live runtimes."
 	uv run --frozen pytest services/worker/tests/test_real_agent_runtimes.py -q --no-cov --import-mode=importlib -m real_agent
+
+test-kind-controller:  ## Run optional kind/Kubernetes deployment-controller smoke test
+	@command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl is required."; exit 127; }
+	@command -v helm >/dev/null 2>&1 || { echo "ERROR: helm is required."; exit 127; }
+	@echo "==> Running optional Kubernetes deployment-controller smoke test..."
+	@echo "    Requires a running MoiraWeave API, kube context, and deployment permissions."
+	MOIRAWEAVE_KIND_CONTROLLER_E2E=1 uv run pytest tests/e2e/test_kind_controller_smoke.py -q --no-cov --import-mode=importlib
 
 E2E_COMPOSE := docker compose -f docker-compose.yml -f tests/e2e/docker-compose.e2e.yml
 
