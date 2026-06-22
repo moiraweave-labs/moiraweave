@@ -600,6 +600,88 @@ async def test_admin_can_manage_team_and_team_scoped_api_key(
     assert audit.json()[0]["metadata"]["subject"] == "team-bot"
 
 
+async def test_team_members_share_run_visibility_without_cross_team_access(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    manifest = {
+        "apiVersion": "moiraweave.io/v1alpha1",
+        "kind": "Workload",
+        "metadata": {"name": "team-agent"},
+        "spec": {
+            "type": "agent-service",
+            "image": "example/agent:latest",
+            "execution": {"mode": "session"},
+            "ports": [{"name": "http", "port": 8000}],
+        },
+    }
+    await client.post(
+        "/v1/workloads",
+        json=manifest,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    for subject in ["alice", "charlie", "bob"]:
+        await client.post(
+            "/auth/users",
+            json={
+                "subject": subject,
+                "password": "correct-horse",
+                "role": "operator",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    for team_id, name, members in [
+        ("agents-a", "Agents A", ["alice", "charlie"]),
+        ("agents-b", "Agents B", ["bob"]),
+    ]:
+        await client.post(
+            "/auth/teams",
+            json={"team_id": team_id, "name": name},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        for member in members:
+            await client.post(
+                f"/auth/teams/{team_id}/members",
+                json={"subject": member, "role": "operator"},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+    for subject in ["alice", "charlie", "bob"]:
+        submitted = await client.post(
+            "/v1/workloads/team-agent/runs",
+            json={"payload": {"owner": subject}},
+            headers={"Authorization": f"Bearer {_token(subject, 'operator')}"},
+        )
+        assert submitted.status_code == 202
+
+    alice_runs = await client.get(
+        "/v1/runs?workload_name=team-agent",
+        headers={"Authorization": f"Bearer {_token('alice', 'operator')}"},
+    )
+    bob_runs = await client.get(
+        "/v1/runs?workload_name=team-agent",
+        headers={"Authorization": f"Bearer {_token('bob', 'operator')}"},
+    )
+    admin_runs = await client.get(
+        "/v1/runs?workload_name=team-agent",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert alice_runs.status_code == 200
+    assert {run["payload"]["owner"] for run in alice_runs.json()} == {
+        "alice",
+        "charlie",
+    }
+    assert bob_runs.status_code == 200
+    assert {run["payload"]["owner"] for run in bob_runs.json()} == {"bob"}
+    assert admin_runs.status_code == 200
+    assert {run["payload"]["owner"] for run in admin_runs.json()} == {
+        "alice",
+        "charlie",
+        "bob",
+    }
+
+
 async def test_viewer_cannot_register_workload(client: AsyncClient) -> None:
     response = await client.post(
         "/v1/workloads",

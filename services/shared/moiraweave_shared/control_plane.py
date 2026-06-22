@@ -546,7 +546,7 @@ class ControlPlaneRepository(Protocol):
 
     async def list_runs(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         limit: int = 50,
@@ -602,7 +602,7 @@ class ControlPlaneRepository(Protocol):
     async def get_agent_session(self, session_id: str) -> StoredAgentSession | None: ...
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str
+        self, agent_name: str, user: str | None
     ) -> list[StoredAgentSession]: ...
 
     async def append_agent_message(
@@ -635,7 +635,7 @@ class ControlPlaneRepository(Protocol):
 
     async def list_deployments(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         env: str | None = None,
@@ -739,7 +739,7 @@ class ControlPlaneRepository(Protocol):
 
     async def list_audit_events(
         self,
-        actor: str,
+        actor: str | None,
         *,
         action: str | None = None,
         resource_type: str | None = None,
@@ -926,7 +926,7 @@ class InMemoryControlPlaneRepository:
 
     async def list_runs(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         limit: int = 50,
@@ -935,7 +935,7 @@ class InMemoryControlPlaneRepository:
         runs = [
             run
             for run in self.runs.values()
-            if run.user == user
+            if (user is None or run.user == user)
             and (workload_name is None or run.workload_name == workload_name)
         ]
         sorted_runs = sorted(runs, key=lambda run: run.created_at, reverse=True)
@@ -1040,12 +1040,12 @@ class InMemoryControlPlaneRepository:
         return self.sessions.get(session_id)
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str
+        self, agent_name: str, user: str | None
     ) -> list[StoredAgentSession]:
         sessions = [
             session
             for session in self.sessions.values()
-            if session.agent_name == agent_name and session.user == user
+            if session.agent_name == agent_name and (user is None or session.user == user)
         ]
         return sorted(sessions, key=lambda session: session.created_at, reverse=True)
 
@@ -1115,7 +1115,7 @@ class InMemoryControlPlaneRepository:
 
     async def list_deployments(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         env: str | None = None,
@@ -1123,7 +1123,7 @@ class InMemoryControlPlaneRepository:
         deployments = [
             deployment
             for deployment in self.deployments.values()
-            if deployment.user == user
+            if (user is None or deployment.user == user)
             and (workload_name is None or deployment.workload_name == workload_name)
             and (env is None or deployment.env == env)
         ]
@@ -1333,7 +1333,7 @@ class InMemoryControlPlaneRepository:
 
     async def list_audit_events(
         self,
-        actor: str,
+        actor: str | None,
         *,
         action: str | None = None,
         resource_type: str | None = None,
@@ -1344,7 +1344,7 @@ class InMemoryControlPlaneRepository:
         events = [
             event
             for event in self.audit_events
-            if event.actor == actor
+            if (actor is None or event.actor == actor)
             and (action is None or event.action == action)
             and (resource_type is None or event.resource_type == resource_type)
             and (resource_id is None or event.resource_id == resource_id)
@@ -1609,46 +1609,15 @@ class PostgresControlPlaneRepository:
 
     async def init(self) -> None:
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS control_plane_migrations (
-                    version integer PRIMARY KEY,
-                    applied_at timestamptz NOT NULL DEFAULT now()
-                );
-                """
+            revision = await conn.fetchval(
+                "SELECT version_num FROM alembic_version LIMIT 1"
             )
-            applied_rows = await conn.fetch(
-                "SELECT version FROM control_plane_migrations"
-            )
-            applied = {int(row["version"]) for row in applied_rows}
-            for version, sql in CONTROL_PLANE_MIGRATIONS:
-                if version in applied:
-                    continue
-                async with conn.transaction():
-                    await conn.execute(sql)
-                    await conn.execute(
-                        """
-                        INSERT INTO control_plane_migrations (version)
-                        VALUES ($1)
-                        ON CONFLICT (version) DO NOTHING
-                        """,
-                        version,
-                    )
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS alembic_version (
-                    version_num varchar(32) NOT NULL PRIMARY KEY
-                );
-                """
-            )
-            await conn.execute(
-                """
-                INSERT INTO alembic_version (version_num)
-                SELECT $1
-                WHERE NOT EXISTS (SELECT 1 FROM alembic_version)
-                """,
-                CONTROL_PLANE_ALEMBIC_BASELINE,
-            )
+            if revision != CONTROL_PLANE_ALEMBIC_BASELINE:
+                raise RuntimeError(
+                    "Control-plane schema is not migrated. "
+                    f"Expected Alembic revision {CONTROL_PLANE_ALEMBIC_BASELINE}, "
+                    f"found {revision or 'none'}."
+                )
 
     async def close(self) -> None:
         await self.pool.close()
@@ -1727,7 +1696,7 @@ class PostgresControlPlaneRepository:
 
     async def list_runs(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         limit: int = 50,
@@ -1739,7 +1708,7 @@ class PostgresControlPlaneRepository:
                 result, error, session_id::text, created_at, updated_at,
                 heartbeat_at, completed_at
             FROM runs
-            WHERE user_subject = $1
+            WHERE ($1::text IS NULL OR user_subject = $1)
                 AND ($2::text IS NULL OR workload_name = $2)
             ORDER BY created_at DESC
             LIMIT $3
@@ -1941,14 +1910,14 @@ class PostgresControlPlaneRepository:
         return _session_from_row(row) if row else None
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str
+        self, agent_name: str, user: str | None
     ) -> list[StoredAgentSession]:
         rows = await self.pool.fetch(
             """
             SELECT session_id::text, agent_name, user_subject, status,
                 metadata, created_at, updated_at
             FROM agent_sessions
-            WHERE agent_name = $1 AND user_subject = $2
+            WHERE agent_name = $1 AND ($2::text IS NULL OR user_subject = $2)
             ORDER BY created_at DESC
             """,
             agent_name,
@@ -2038,7 +2007,7 @@ class PostgresControlPlaneRepository:
 
     async def list_deployments(
         self,
-        user: str,
+        user: str | None,
         *,
         workload_name: str | None = None,
         env: str | None = None,
@@ -2049,7 +2018,7 @@ class PostgresControlPlaneRepository:
                 status, endpoint,
                 user_subject, metadata, created_at, updated_at
             FROM deployments
-            WHERE user_subject = $1
+            WHERE ($1::text IS NULL OR user_subject = $1)
                 AND ($2::text IS NULL OR workload_name = $2)
                 AND ($3::text IS NULL OR environment = $3)
             ORDER BY updated_at DESC
@@ -2350,7 +2319,7 @@ class PostgresControlPlaneRepository:
 
     async def list_audit_events(
         self,
-        actor: str,
+        actor: str | None,
         *,
         action: str | None = None,
         resource_type: str | None = None,
@@ -2363,7 +2332,7 @@ class PostgresControlPlaneRepository:
             SELECT id::text, timestamp, actor_subject, action, resource_type,
                 resource_id, metadata
             FROM audit_events
-            WHERE actor_subject = $1
+            WHERE ($1::text IS NULL OR actor_subject = $1)
               AND ($2::text IS NULL OR action = $2)
               AND ($3::text IS NULL OR resource_type = $3)
               AND ($4::text IS NULL OR resource_id = $4)

@@ -842,8 +842,12 @@ def _deployment_operation_event_response(event: Any) -> DeploymentOperationEvent
     return DeploymentOperationEvent(**event.model_dump())
 
 
-def _can_access_deployment_operation(operation: Any, current_user: Any) -> bool:
-    return bool(operation.user == current_user.subject or current_user.role == "admin")
+async def _can_access_deployment_operation(
+    operation: Any,
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> bool:
+    return await _subject_visible(operation.user, control_plane, current_user)
 
 
 def _parse_utc_timestamp(value: str) -> datetime:
@@ -1082,17 +1086,186 @@ async def _get_workload(
     return workloads[name]
 
 
+async def _visible_subjects(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> set[str] | None:
+    """Return subjects visible to the user, or None for unrestricted admin scope."""
+
+    if current_user.role == "admin":
+        return None
+    team_ids: set[str] = set()
+    if current_user.team_id:
+        team_ids.add(current_user.team_id)
+    for membership in await control_plane.list_team_members(
+        subject=current_user.subject
+    ):
+        team_ids.add(membership.team_id)
+    subjects = {current_user.subject}
+    for team_id in team_ids:
+        for member in await control_plane.list_team_members(team_id=team_id):
+            subjects.add(member.subject)
+    return subjects
+
+
+async def _subject_visible(
+    subject: str,
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> bool:
+    subjects = await _visible_subjects(control_plane, current_user)
+    return subjects is None or subject in subjects
+
+
+async def _list_visible_runs(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    *,
+    workload_name: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[StoredRun]:
+    subjects = await _visible_subjects(control_plane, current_user)
+    if subjects is None:
+        return await control_plane.list_runs(
+            None,
+            workload_name=workload_name,
+            limit=limit,
+            offset=offset,
+        )
+    runs: list[StoredRun] = []
+    for subject in sorted(subjects):
+        runs.extend(
+            await control_plane.list_runs(
+                subject,
+                workload_name=workload_name,
+                limit=limit,
+                offset=0,
+            )
+        )
+    runs.sort(key=lambda run: run.created_at, reverse=True)
+    return runs[offset : offset + limit]
+
+
+async def _list_visible_deployments(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    *,
+    workload_name: str | None = None,
+    env: str | None = None,
+) -> list[Any]:
+    subjects = await _visible_subjects(control_plane, current_user)
+    if subjects is None:
+        return await control_plane.list_deployments(
+            None,
+            workload_name=workload_name,
+            env=env,
+        )
+    deployments: list[Any] = []
+    for subject in sorted(subjects):
+        deployments.extend(
+            await control_plane.list_deployments(
+                subject,
+                workload_name=workload_name,
+                env=env,
+            )
+        )
+    return sorted(
+        deployments,
+        key=lambda deployment: deployment.updated_at or deployment.created_at,
+        reverse=True,
+    )
+
+
+async def _list_visible_operations(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    *,
+    workload_name: str | None = None,
+    target: str | None = None,
+    env: str | None = None,
+    status_filter: str | None = None,
+    action: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Any]:
+    subjects = await _visible_subjects(control_plane, current_user)
+    if subjects is None:
+        return await control_plane.list_deployment_operations(
+            None,
+            workload_name=workload_name,
+            target=target,
+            env=env,
+            status=status_filter,
+            action=action,
+            limit=limit,
+            offset=offset,
+        )
+    operations: list[Any] = []
+    for subject in sorted(subjects):
+        operations.extend(
+            await control_plane.list_deployment_operations(
+                subject,
+                workload_name=workload_name,
+                target=target,
+                env=env,
+                status=status_filter,
+                action=action,
+                limit=limit,
+                offset=0,
+            )
+        )
+    operations.sort(key=lambda operation: operation.created_at, reverse=True)
+    return operations[offset : offset + limit]
+
+
+async def _list_visible_audit_events(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    *,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[StoredAuditEvent]:
+    subjects = await _visible_subjects(control_plane, current_user)
+    if subjects is None:
+        return await control_plane.list_audit_events(
+            None,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            limit=limit,
+            offset=offset,
+        )
+    events: list[StoredAuditEvent] = []
+    for subject in sorted(subjects):
+        events.extend(
+            await control_plane.list_audit_events(
+                subject,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                limit=limit,
+                offset=0,
+            )
+        )
+    events.sort(key=lambda event: event.timestamp, reverse=True)
+    return events[offset : offset + limit]
+
+
 async def _authorize_run(
     run_id: str,
     control_plane: ControlPlaneRepository,
-    current_user: Any,
+    current_user: TokenData,
 ) -> StoredRun:
     run = await control_plane.get_run(run_id)
     if run is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
         )
-    if run.user != current_user.subject:
+    if not await _subject_visible(run.user, control_plane, current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return run
 
@@ -1191,14 +1364,18 @@ async def _authorize_agent_session(
     name: str,
     session_id: str,
     control_plane: ControlPlaneRepository,
-    current_user: Any,
+    current_user: TokenData,
 ) -> Any:
     session = await control_plane.get_agent_session(session_id)
     if session is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Agent session not found"
         )
-    if session.user != current_user.subject or session.agent_name != name:
+    if session.agent_name != name or not await _subject_visible(
+        session.user,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return session
 
@@ -2357,8 +2534,9 @@ async def list_deployments(
     workload_name: str | None = None,
     env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> list[DeploymentResponse]:
-    deployments = await control_plane.list_deployments(
-        current_user.subject,
+    deployments = await _list_visible_deployments(
+        control_plane,
+        current_user,
         workload_name=workload_name,
         env=env,
     )
@@ -2370,9 +2548,10 @@ async def list_environments(
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> list[EnvironmentInfo]:
-    deployments = await control_plane.list_deployments(current_user.subject)
-    operations = await control_plane.list_deployment_operations(
-        current_user.subject,
+    deployments = await _list_visible_deployments(control_plane, current_user)
+    operations = await _list_visible_operations(
+        control_plane,
+        current_user,
         limit=500,
         offset=0,
     )
@@ -2407,8 +2586,9 @@ async def list_audit_events(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[AuditEventResponse]:
-    events = await control_plane.list_audit_events(
-        current_user.subject,
+    events = await _list_visible_audit_events(
+        control_plane,
+        current_user,
         action=action,
         resource_type=resource_type,
         resource_id=resource_id,
@@ -2630,10 +2810,16 @@ async def list_operations_alerts(
                 )
             )
 
-    operations = await control_plane.list_deployment_operations(
-        None if scope == "all" else current_user.subject,
-        env=env,
-        limit=200,
+    operations = (
+        await control_plane.list_deployment_operations(None, env=env, limit=200)
+        if scope == "all"
+        else await _list_visible_operations(
+            control_plane,
+            current_user,
+            env=env,
+            limit=200,
+            offset=0,
+        )
     )
     queued_ops = [operation for operation in operations if operation.status == "queued"]
     running_ops = [
@@ -2720,7 +2906,16 @@ async def list_operations_alerts(
             )
         )
 
-    runs = await control_plane.list_runs(current_user.subject, limit=200)
+    runs = (
+        await control_plane.list_runs(None, limit=200)
+        if scope == "all"
+        else await _list_visible_runs(
+            control_plane,
+            current_user,
+            limit=200,
+            offset=0,
+        )
+    )
     if env is not None:
         runs = [
             run
@@ -2806,15 +3001,29 @@ async def list_deployment_operations(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Requires admin role",
         )
-    operations = await control_plane.list_deployment_operations(
-        None if scope == "all" else current_user.subject,
-        workload_name=workload_name,
-        target=normalized_target,
-        env=env,
-        status=operation_status,
-        action=action,
-        limit=limit,
-        offset=offset,
+    operations = (
+        await control_plane.list_deployment_operations(
+            None,
+            workload_name=workload_name,
+            target=normalized_target,
+            env=env,
+            status=operation_status,
+            action=action,
+            limit=limit,
+            offset=offset,
+        )
+        if scope == "all"
+        else await _list_visible_operations(
+            control_plane,
+            current_user,
+            workload_name=workload_name,
+            target=normalized_target,
+            env=env,
+            status_filter=operation_status,
+            action=action,
+            limit=limit,
+            offset=offset,
+        )
     )
     return [_deployment_operation_response(operation) for operation in operations]
 
@@ -2834,7 +3043,11 @@ async def get_deployment_operation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     return _deployment_operation_response(operation)
 
@@ -2854,7 +3067,11 @@ async def list_deployment_operation_events(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     events = await control_plane.list_deployment_operation_events(operation_id)
     return [_deployment_operation_event_response(event) for event in events]
@@ -2876,7 +3093,11 @@ async def claim_deployment_operation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     now = utc_now_iso()
     lease_expired = (
@@ -2962,7 +3183,11 @@ async def heartbeat_deployment_operation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if operation.status != "running":
         raise HTTPException(
@@ -3041,7 +3266,11 @@ async def append_deployment_operation_event(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     event = await control_plane.append_deployment_operation_event(
         operation_id,
@@ -3068,7 +3297,11 @@ async def complete_deployment_operation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Deployment operation not found",
         )
-    if not _can_access_deployment_operation(operation, current_user):
+    if not await _can_access_deployment_operation(
+        operation,
+        control_plane,
+        current_user,
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if operation.status in {"succeeded", "failed", "canceled"}:
         raise HTTPException(
@@ -3138,8 +3371,9 @@ async def list_workload_deployments(
 ) -> list[DeploymentResponse]:
     settings = get_settings()
     await _get_workload(name, control_plane, settings)
-    deployments = await control_plane.list_deployments(
-        current_user.subject,
+    deployments = await _list_visible_deployments(
+        control_plane,
+        current_user,
         workload_name=name,
         env=env,
     )
@@ -3157,8 +3391,9 @@ async def workload_health(
     await _get_workload(name, control_plane, settings)
     deployments = [
         _deployment_response(deployment)
-        for deployment in await control_plane.list_deployments(
-            current_user.subject,
+        for deployment in await _list_visible_deployments(
+            control_plane,
+            current_user,
             workload_name=name,
             env=env,
         )
@@ -3209,8 +3444,9 @@ async def list_runs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[RunStatusResponse]:
-    runs = await control_plane.list_runs(
-        current_user.subject,
+    runs = await _list_visible_runs(
+        control_plane,
+        current_user,
         workload_name=workload_name,
         limit=limit,
         offset=offset,
@@ -3562,8 +3798,9 @@ async def list_artifacts(
         run = await _authorize_run(run_id, control_plane, current_user)
         runs = [run]
     else:
-        candidate_runs = await control_plane.list_runs(
-            current_user.subject,
+        candidate_runs = await _list_visible_runs(
+            control_plane,
+            current_user,
             workload_name=workload_name,
             limit=200,
             offset=0,
@@ -3827,7 +4064,14 @@ async def list_agent_sessions(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Workload {name!r} is not an agent-service",
         )
-    sessions = await control_plane.list_agent_sessions(name, current_user.subject)
+    subjects = await _visible_subjects(control_plane, current_user)
+    if subjects is None:
+        sessions = await control_plane.list_agent_sessions(name, None)
+    else:
+        sessions = []
+        for subject in sorted(subjects):
+            sessions.extend(await control_plane.list_agent_sessions(name, subject))
+        sessions.sort(key=lambda session: session.created_at, reverse=True)
     return [_session_payload(session) for session in sessions]
 
 
@@ -3846,10 +4090,12 @@ async def list_agent_session_messages(
     messages = await control_plane.list_agent_messages(session_id)
     runs = [
         run
-        for run in await control_plane.list_runs(
-            current_user.subject,
+        for run in await _list_visible_runs(
+            control_plane,
+            current_user,
             workload_name=name,
             limit=200,
+            offset=0,
         )
         if run.session_id == session_id
     ]
@@ -3905,10 +4151,12 @@ async def agent_session_health(
         current_user,
     )
     messages = await control_plane.list_agent_messages(session_id)
-    runs = await control_plane.list_runs(
-        current_user.subject,
+    runs = await _list_visible_runs(
+        control_plane,
+        current_user,
         workload_name=name,
         limit=50,
+        offset=0,
     )
     latest_run = next((run for run in runs if run.session_id == session_id), None)
     status_value = session.status

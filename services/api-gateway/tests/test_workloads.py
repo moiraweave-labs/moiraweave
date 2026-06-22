@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from httpx import AsyncClient
     from moiraweave_shared.control_plane import InMemoryControlPlaneRepository
 
+    from app.models.auth import TokenData
+
 
 def _agent_manifest(name: str = "hermes") -> dict[str, Any]:
     return {
@@ -432,7 +434,9 @@ async def test_get_run_returns_result(
 async def test_get_run_for_other_user_returns_403(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
+    fake_user: TokenData,
 ) -> None:
+    fake_user.role = "operator"
     await control_plane.create_run(
         "run-2",
         "hermes",

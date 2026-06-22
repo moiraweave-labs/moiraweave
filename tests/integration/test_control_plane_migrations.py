@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from importlib import import_module
 
+import pytest
 from alembic.script import ScriptDirectory
 from moiraweave_shared.alembic_runner import alembic_config, to_sqlalchemy_async_url
-from moiraweave_shared.control_plane import CONTROL_PLANE_ALEMBIC_BASELINE
+from moiraweave_shared.control_plane import (
+    CONTROL_PLANE_ALEMBIC_BASELINE,
+    PostgresControlPlaneRepository,
+)
 
 baseline = import_module(
     "moiraweave_shared.alembic.versions.20260612_0001_control_plane_baseline"
@@ -72,3 +76,59 @@ def test_control_plane_migration_sql_is_split_into_single_driver_statements() ->
         for statement in baseline._split_sql_statements(sql):
             assert statement
             assert not statement.rstrip().endswith(";")
+
+
+class _FakeAcquire:
+    def __init__(self, conn: _FakeConn) -> None:
+        self.conn = conn
+
+    async def __aenter__(self) -> _FakeConn:
+        return self.conn
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _FakeConn:
+    def __init__(self, revision: str | None) -> None:
+        self.revision = revision
+        self.executed: list[str] = []
+
+    async def fetchval(self, query: str) -> str | None:
+        self.executed.append(query)
+        return self.revision
+
+    async def execute(self, query: str, *args: object) -> None:
+        raise AssertionError(
+            f"PostgresControlPlaneRepository.init must not run DDL: {query!r}"
+        )
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        raise AssertionError(
+            f"PostgresControlPlaneRepository.init must not run legacy fetches: {query!r}"
+        )
+
+
+class _FakePool:
+    def __init__(self, revision: str | None) -> None:
+        self.conn = _FakeConn(revision)
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.conn)
+
+
+async def test_postgres_repository_init_only_verifies_alembic_revision() -> None:
+    pool = _FakePool(CONTROL_PLANE_ALEMBIC_BASELINE)
+    repo = PostgresControlPlaneRepository(pool)
+
+    await repo.init()
+
+    assert pool.conn.executed == ["SELECT version_num FROM alembic_version LIMIT 1"]
+
+
+async def test_postgres_repository_init_fails_without_alembic_baseline() -> None:
+    pool = _FakePool(None)
+    repo = PostgresControlPlaneRepository(pool)
+
+    with pytest.raises(RuntimeError, match="Control-plane schema is not migrated"):
+        await repo.init()
