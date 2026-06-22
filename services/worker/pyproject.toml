@@ -9,7 +9,7 @@ dependencies = [
     "asyncpg>=0.30",
     "pydantic-settings>=2.14.1",
     # Qdrant vector store (RAG/search workloads)
-    "qdrant-client[fastembed]>=1.12",
+    "qdrant-client[fastembed]>=1.18.0",
     # Prometheus metrics server
     "prometheus-client>=0.25.0",
     # MLflow — inference metrics tracking
