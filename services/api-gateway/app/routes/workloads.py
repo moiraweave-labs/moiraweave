@@ -1190,6 +1190,63 @@ async def _list_visible_deployments(
     )
 
 
+async def _visible_workload_names_for_env(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    env: str | None,
+) -> set[str] | None:
+    if env is None:
+        return None
+    deployments = await _list_visible_deployments(
+        control_plane,
+        current_user,
+        env=env,
+    )
+    return {deployment.workload_name for deployment in deployments}
+
+
+async def _list_visible_runs_for_filters(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+    *,
+    workload_name: str | None = None,
+    env: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[StoredRun]:
+    workload_names = await _visible_workload_names_for_env(
+        control_plane,
+        current_user,
+        env,
+    )
+    if workload_names is None:
+        return await _list_visible_runs(
+            control_plane,
+            current_user,
+            workload_name=workload_name,
+            limit=limit,
+            offset=offset,
+        )
+    if workload_name is not None:
+        if workload_name not in workload_names:
+            return []
+        workload_names = {workload_name}
+    runs: list[StoredRun] = []
+    per_workload_limit = min(max(limit + offset, 1), 500)
+    for name in sorted(workload_names):
+        runs.extend(
+            await _list_visible_runs(
+                control_plane,
+                current_user,
+                workload_name=name,
+                limit=per_workload_limit,
+                offset=0,
+            )
+        )
+    runs.sort(key=lambda run: run.created_at, reverse=True)
+    return runs[offset : offset + limit]
+
+
 async def _list_visible_operations(
     control_plane: ControlPlaneRepository,
     current_user: TokenData,
@@ -3545,13 +3602,15 @@ async def list_runs(
     control_plane: ControlPlane,
     current_user: CurrentUser,
     workload_name: str | None = None,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[RunStatusResponse]:
-    runs = await _list_visible_runs(
+    runs = await _list_visible_runs_for_filters(
         control_plane,
         current_user,
         workload_name=workload_name,
+        env=env,
         limit=limit,
         offset=offset,
     )
@@ -3896,6 +3955,7 @@ async def list_artifacts(
     control_plane: ControlPlane,
     current_user: CurrentUser,
     workload_name: str | None = None,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
     session_id: str | None = None,
     run_id: str | None = None,
     content_type: str | None = None,
@@ -3904,17 +3964,44 @@ async def list_artifacts(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> list[RunArtifact]:
+    workload_names = await _visible_workload_names_for_env(
+        control_plane,
+        current_user,
+        env,
+    )
     if run_id:
         run = await _authorize_run(run_id, control_plane, current_user)
+        if workload_names is not None and run.workload_name not in workload_names:
+            return []
         runs = [run]
     else:
-        candidate_runs = await _list_visible_runs(
-            control_plane,
-            current_user,
-            workload_name=workload_name,
-            limit=200,
-            offset=0,
-        )
+        if workload_names is not None:
+            target_workload_names = workload_names
+            if workload_name is not None:
+                if workload_name not in workload_names:
+                    target_workload_names = set()
+                else:
+                    target_workload_names = {workload_name}
+            candidate_runs = []
+            for name in sorted(target_workload_names):
+                candidate_runs.extend(
+                    await _list_visible_runs(
+                        control_plane,
+                        current_user,
+                        workload_name=name,
+                        limit=200,
+                        offset=0,
+                    )
+                )
+            candidate_runs.sort(key=lambda run: run.created_at, reverse=True)
+        else:
+            candidate_runs = await _list_visible_runs(
+                control_plane,
+                current_user,
+                workload_name=workload_name,
+                limit=200,
+                offset=0,
+            )
         runs = [
             run
             for run in candidate_runs

@@ -551,6 +551,47 @@ async def test_list_runs_filters_by_workload(
     assert body[0]["workload_name"] == "hermes"
 
 
+async def test_list_runs_filters_by_environment_deployment_records(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client, "hermes")
+    await _register(auth_client, "openclaw")
+    await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={"target": "local", "env": "prod", "status": "deployed"},
+    )
+    await auth_client.post(
+        "/v1/workloads/openclaw/deployments",
+        json={"target": "local", "env": "dev", "status": "deployed"},
+    )
+    await control_plane.create_run(
+        "run-prod",
+        "hermes",
+        {},
+        "testuser",
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    await control_plane.create_run(
+        "run-dev",
+        "openclaw",
+        {},
+        "testuser",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    prod = await auth_client.get("/v1/runs?env=prod")
+    dev_openclaw = await auth_client.get("/v1/runs?env=dev&workload_name=openclaw")
+    dev_hermes = await auth_client.get("/v1/runs?env=dev&workload_name=hermes")
+
+    assert prod.status_code == 200
+    assert [run["run_id"] for run in prod.json()] == ["run-prod"]
+    assert dev_openclaw.status_code == 200
+    assert [run["run_id"] for run in dev_openclaw.json()] == ["run-dev"]
+    assert dev_hermes.status_code == 200
+    assert dev_hermes.json() == []
+
+
 async def test_list_runs_supports_limit_and_offset(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
@@ -666,6 +707,69 @@ async def test_artifact_library_filters_by_workload_session_and_type(
     assert resp.json()[0]["name"] == "trace.json"
     assert resp.json()[0]["workload_name"] == "hermes"
     assert resp.json()[0]["session_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+async def test_artifact_library_filters_by_environment(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client, "hermes")
+    await _register(auth_client, "openclaw")
+    await auth_client.post(
+        "/v1/workloads/hermes/deployments",
+        json={"target": "local", "env": "prod", "status": "deployed"},
+    )
+    await auth_client.post(
+        "/v1/workloads/openclaw/deployments",
+        json={"target": "local", "env": "dev", "status": "deployed"},
+    )
+    await control_plane.create_run(
+        "run-prod-artifact",
+        "hermes",
+        {},
+        "testuser",
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    await control_plane.create_run(
+        "run-dev-artifact",
+        "openclaw",
+        {},
+        "testuser",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    await control_plane.record_artifact(
+        "run-prod-artifact",
+        {
+            "id": "prod-artifact",
+            "name": "prod.json",
+            "uri": "file:///prod.json",
+            "content_type": "application/json",
+            "created_at": "2026-01-02T00:00:00+00:00",
+        },
+    )
+    await control_plane.record_artifact(
+        "run-dev-artifact",
+        {
+            "id": "dev-artifact",
+            "name": "dev.json",
+            "uri": "file:///dev.json",
+            "content_type": "application/json",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        },
+    )
+
+    prod = await auth_client.get("/v1/artifacts?env=prod")
+    dev_hermes = await auth_client.get("/v1/artifacts?env=dev&workload_name=hermes")
+    run_filtered_out = await auth_client.get(
+        "/v1/artifacts?env=dev&run_id=run-prod-artifact"
+    )
+
+    assert prod.status_code == 200
+    assert [artifact["name"] for artifact in prod.json()] == ["prod.json"]
+    assert dev_hermes.status_code == 200
+    assert dev_hermes.json() == []
+    assert run_filtered_out.status_code == 200
+    assert run_filtered_out.json() == []
 
 
 async def test_team_scope_covers_sessions_artifacts_deployments_operations_and_audit(
