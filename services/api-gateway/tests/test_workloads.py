@@ -844,6 +844,15 @@ async def test_workloads_are_scoped_by_persisted_team_ownership(
     assert created.json()["owner_subject"] == "admin"
     assert created.json()["team_id"] == "agents-a"
 
+    template_created = await client.post(
+        "/v1/workloads/from-template",
+        json={"template_id": "demo-agent", "team_id": "agents-a"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert template_created.status_code == 201
+    assert template_created.json()["team_id"] == "agents-a"
+
     alice_token = _token("alice", "operator")
     bob_token = _token("bob", "operator")
     alice_workloads = await client.get(
@@ -868,8 +877,10 @@ async def test_workloads_are_scoped_by_persisted_team_ownership(
         headers={"Authorization": f"Bearer {bob_token}"},
     )
 
-    assert "team-a-agent" in {item["name"] for item in alice_workloads.json()}
-    assert "team-a-agent" not in {item["name"] for item in bob_workloads.json()}
+    alice_names = {item["name"] for item in alice_workloads.json()}
+    bob_names = {item["name"] for item in bob_workloads.json()}
+    assert {"demo-agent", "team-a-agent"}.issubset(alice_names)
+    assert {"demo-agent", "team-a-agent"}.isdisjoint(bob_names)
     assert alice_get.status_code == 200
     assert bob_get.status_code == 404
     assert bob_run.status_code == 404
