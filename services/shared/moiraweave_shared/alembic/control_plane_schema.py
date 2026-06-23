@@ -290,4 +290,11 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE controller_id IS NOT NULL;
         """,
     ),
+    (
+        9,
+        """
+        CREATE INDEX IF NOT EXISTS run_events_run_id_id_idx
+            ON run_events (run_id, id ASC);
+        """,
+    ),
 )

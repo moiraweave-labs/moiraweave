@@ -302,7 +302,14 @@ class ControlPlaneRepository(Protocol):
         timestamp: str | None = None,
     ) -> StoredRunEvent: ...
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]: ...
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]: ...
 
     async def record_artifact(
         self,
@@ -736,8 +743,20 @@ class InMemoryControlPlaneRepository:
         self.events.setdefault(run_id, []).append(event)
         return event
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]:
-        return list(self.events.get(run_id, []))
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]:
+        events = self.events.get(run_id, [])
+        if after_id is not None:
+            events = [event for event in events if int(event.id) > after_id]
+        if tail and limit is not None:
+            return list(events[-limit:])
+        return list(events if limit is None else events[:limit])
 
     async def record_artifact(
         self,
@@ -1571,15 +1590,45 @@ class PostgresControlPlaneRepository:
         )
         return _event_from_row(row)
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]:
-        rows = await self.pool.fetch(
-            """
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]:
+        if tail and limit is not None:
+            rows = await self.pool.fetch(
+                """
+                SELECT id::text, run_id::text, timestamp, type, message, data
+                FROM (
+                    SELECT id, run_id, timestamp, type, message, data
+                    FROM run_events
+                    WHERE run_id = $1::uuid
+                    ORDER BY id DESC
+                    LIMIT $2
+                ) AS recent_events
+                ORDER BY id ASC
+                """,
+                run_id,
+                limit,
+            )
+            return [_event_from_row(row) for row in rows]
+        query = """
             SELECT id::text, run_id::text, timestamp, type, message, data
             FROM run_events
             WHERE run_id = $1::uuid
+              AND ($2::bigint IS NULL OR id > $2::bigint)
             ORDER BY id ASC
-            """,
-            run_id,
+        """
+        args: list[Any] = [run_id, after_id]
+        if limit is not None:
+            query += " LIMIT $3"
+            args.append(limit)
+        rows = await self.pool.fetch(
+            query,
+            *args,
         )
         return [_event_from_row(row) for row in rows]
 

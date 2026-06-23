@@ -673,6 +673,56 @@ async def test_events_and_artifacts_are_returned(
     assert artifacts.json()[0]["session_id"] is None
 
 
+async def test_run_events_support_incremental_cursor_reads(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await control_plane.create_run(
+        "run-event-cursor",
+        "hermes",
+        {},
+        "testuser",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    for index in range(3):
+        await control_plane.append_run_event(
+            "run-event-cursor",
+            f"agent.progress.{index}",
+            f"Progress event {index}",
+        )
+
+    first_page = await auth_client.get("/v1/runs/run-event-cursor/events?limit=1")
+    assert first_page.status_code == 200
+    first_event = first_page.json()[0]
+
+    incremental = await auth_client.get(
+        f"/v1/runs/run-event-cursor/events?after_id={first_event['id']}"
+    )
+    assert incremental.status_code == 200
+    assert [event["type"] for event in incremental.json()] == [
+        "agent.progress.1",
+        "agent.progress.2",
+    ]
+
+    recent = await auth_client.get("/v1/runs/run-event-cursor/events?limit=2&tail=true")
+    assert recent.status_code == 200
+    assert [event["type"] for event in recent.json()] == [
+        "agent.progress.1",
+        "agent.progress.2",
+    ]
+
+    conflicting_cursor = await auth_client.get(
+        f"/v1/runs/run-event-cursor/events?after_id={first_event['id']}&tail=true"
+    )
+    assert conflicting_cursor.status_code == 422
+
+    invalid_last_event = await auth_client.get(
+        "/v1/runs/run-event-cursor/events/stream",
+        headers={"Last-Event-ID": "not-a-number"},
+    )
+    assert invalid_last_event.status_code == 422
+
+
 async def test_artifact_library_filters_by_workload_session_and_type(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,

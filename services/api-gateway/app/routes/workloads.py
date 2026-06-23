@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from moiraweave_shared.control_plane import (
     ControlPlaneRepository,
     StoredArtifact,
@@ -4015,9 +4015,19 @@ async def list_run_events(
     run_id: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    after_id: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+    tail: bool = Query(default=False),
 ) -> list[RunEvent]:
     await _authorize_run(run_id, control_plane, current_user)
-    events = await control_plane.list_run_events(run_id)
+    if tail and after_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="tail and after_id cannot be combined",
+        )
+    events = await control_plane.list_run_events(
+        run_id, after_id=after_id, limit=limit, tail=tail
+    )
     return [_event_response(event) for event in events]
 
 
@@ -4026,17 +4036,28 @@ async def stream_run_events(
     run_id: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    after_id: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
     await _authorize_run(run_id, control_plane, current_user)
+    cursor = after_id
+    if cursor is None and last_event_id is not None:
+        try:
+            cursor = int(last_event_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Last-Event-ID must be a numeric run event id",
+            ) from exc
 
     async def _events() -> AsyncGenerator[str]:
-        seen: set[str] = set()
+        nonlocal cursor
         while True:
-            entries = await control_plane.list_run_events(run_id)
+            entries = await control_plane.list_run_events(
+                run_id, after_id=cursor, limit=200
+            )
             for event in entries:
-                if event.id in seen:
-                    continue
-                seen.add(event.id)
+                cursor = int(event.id)
                 response = _event_response(event)
                 yield (
                     f"id: {response.id}\n"
