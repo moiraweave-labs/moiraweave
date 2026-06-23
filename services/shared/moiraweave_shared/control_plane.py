@@ -105,6 +105,13 @@ class StoredArtifact(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class StoredWorkload(BaseModel):
+    """A registered workload together with its persistent owner."""
+
+    workload: WorkloadDefinition
+    user: str | None = None
+
+
 class StoredAgentSession(BaseModel):
     session_id: str
     agent_name: str
@@ -246,6 +253,10 @@ class ControlPlaneRepository(Protocol):
     async def list_workloads(self) -> list[WorkloadDefinition]: ...
 
     async def get_workload(self, name: str) -> WorkloadDefinition | None: ...
+
+    async def list_workload_records(self) -> list[StoredWorkload]: ...
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None: ...
 
     async def create_run(
         self,
@@ -573,6 +584,7 @@ class InMemoryControlPlaneRepository:
 
     def __init__(self) -> None:
         self.workloads: dict[str, WorkloadDefinition] = {}
+        self.workload_users: dict[str, str] = {}
         self.runs: dict[str, StoredRun] = {}
         self.events: dict[str, list[StoredRunEvent]] = {}
         self.artifacts: dict[str, list[StoredArtifact]] = {}
@@ -607,14 +619,27 @@ class InMemoryControlPlaneRepository:
     async def upsert_workload(
         self, workload: WorkloadDefinition, user: str, *, now: str | None = None
     ) -> None:
-        del user, now
+        del now
         self.workloads[workload.metadata.name] = workload
+        self.workload_users[workload.metadata.name] = user
 
     async def list_workloads(self) -> list[WorkloadDefinition]:
         return list(self.workloads.values())
 
     async def get_workload(self, name: str) -> WorkloadDefinition | None:
         return self.workloads.get(name)
+
+    async def list_workload_records(self) -> list[StoredWorkload]:
+        return [
+            StoredWorkload(workload=workload, user=self.workload_users.get(name))
+            for name, workload in self.workloads.items()
+        ]
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None:
+        workload = self.workloads.get(name)
+        if workload is None:
+            return None
+        return StoredWorkload(workload=workload, user=self.workload_users.get(name))
 
     async def create_run(
         self,
@@ -1382,6 +1407,24 @@ class PostgresControlPlaneRepository:
             return None
         manifest = _json_dict(row["manifest"])
         return WorkloadDefinition.model_validate(manifest) if manifest else None
+
+    async def list_workload_records(self) -> list[StoredWorkload]:
+        rows = await self.pool.fetch(
+            "SELECT manifest, user_subject FROM workloads ORDER BY name ASC"
+        )
+        return [
+            _stored_workload_from_row(row)
+            for row in rows
+            if _json_dict(row["manifest"]) is not None
+        ]
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None:
+        row = await self.pool.fetchrow(
+            "SELECT manifest, user_subject FROM workloads WHERE name = $1", name
+        )
+        if row is None or _json_dict(row["manifest"]) is None:
+            return None
+        return _stored_workload_from_row(row)
 
     async def create_run(
         self,
@@ -2477,6 +2520,16 @@ def _artifact_from_dict(
         size_bytes=artifact.get("size_bytes"),
         created_at=str(artifact.get("created_at") or utc_now_iso()),
         metadata=artifact.get("metadata") or {},
+    )
+
+
+def _stored_workload_from_row(row: Any) -> StoredWorkload:
+    manifest = _json_dict(row["manifest"])
+    if manifest is None:
+        raise ValueError("Stored workload manifest cannot be empty")
+    return StoredWorkload(
+        workload=WorkloadDefinition.model_validate(manifest),
+        user=str(row["user_subject"]),
     )
 
 

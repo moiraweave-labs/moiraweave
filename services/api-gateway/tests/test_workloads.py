@@ -800,6 +800,91 @@ async def test_audit_events_filter_by_environment_metadata(
     assert [event["resource_id"] for event in dev.json()] == ["operation-dev"]
 
 
+async def test_workloads_are_scoped_by_persisted_team_ownership(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    for subject in ["alice", "bob"]:
+        assert (
+            await client.post(
+                "/auth/users",
+                json={
+                    "subject": subject,
+                    "password": "correct-horse",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+    for team_id, member in [("agents-a", "alice"), ("agents-b", "bob")]:
+        assert (
+            await client.post(
+                "/auth/teams",
+                json={"team_id": team_id, "name": team_id},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+        assert (
+            await client.post(
+                f"/auth/teams/{team_id}/members",
+                json={"subject": member, "role": "operator"},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+
+    manifest = _agent_manifest("team-a-agent")
+    manifest["metadata"]["annotations"] = {"moiraweave.io/team-id": "agents-a"}
+    created = await client.post(
+        "/v1/workloads",
+        json=manifest,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["owner_subject"] == "admin"
+    assert created.json()["team_id"] == "agents-a"
+
+    alice_token = _token("alice", "operator")
+    bob_token = _token("bob", "operator")
+    alice_workloads = await client.get(
+        "/v1/workloads",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    bob_workloads = await client.get(
+        "/v1/workloads",
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+    alice_get = await client.get(
+        "/v1/workloads/team-a-agent",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    bob_get = await client.get(
+        "/v1/workloads/team-a-agent",
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+    bob_run = await client.post(
+        "/v1/workloads/team-a-agent/runs",
+        json={"payload": {"message": "not allowed"}},
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+
+    assert "team-a-agent" in {item["name"] for item in alice_workloads.json()}
+    assert "team-a-agent" not in {item["name"] for item in bob_workloads.json()}
+    assert alice_get.status_code == 200
+    assert bob_get.status_code == 404
+    assert bob_run.status_code == 404
+
+    unscoped_update = _agent_manifest("team-a-agent")
+    updated = await client.post(
+        "/v1/workloads",
+        json=unscoped_update,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert updated.status_code == 201
+    assert updated.json()["team_id"] == "agents-a"
+
+
 async def test_team_scope_covers_sessions_artifacts_deployments_operations_and_audit(
     client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,

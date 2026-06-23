@@ -125,6 +125,10 @@ class _AuditQueryPool:
         self.calls.append((query, args))
         return []
 
+    async def fetchrow(self, query: str, *args: object) -> None:
+        self.calls.append((query, args))
+        return None
+
 
 async def test_postgres_repository_init_only_verifies_alembic_revision() -> None:
     pool = _FakePool(CONTROL_PLANE_ALEMBIC_BASELINE)
@@ -168,3 +172,25 @@ async def test_postgres_audit_query_filters_environment_metadata() -> None:
         25,
         10,
     )
+
+
+async def test_postgres_workload_record_queries_include_persistent_owner() -> None:
+    pool = _AuditQueryPool()
+    repo = PostgresControlPlaneRepository(pool)
+
+    records = await repo.list_workload_records()
+    record = await repo.get_workload_record("team-a-agent")
+
+    assert records == []
+    assert record is None
+    assert len(pool.calls) == 2
+    assert (
+        "SELECT manifest, user_subject FROM workloads ORDER BY name ASC"
+        in pool.calls[0][0]
+    )
+    assert pool.calls[0][1] == ()
+    assert (
+        "SELECT manifest, user_subject FROM workloads WHERE name = $1"
+        in pool.calls[1][0]
+    )
+    assert pool.calls[1][1] == ("team-a-agent",)

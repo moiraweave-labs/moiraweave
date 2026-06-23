@@ -12,6 +12,8 @@ class WorkloadInfo(BaseModel):
     type: str
     execution_mode: str
     image: str | None = None
+    owner_subject: str | None = None
+    team_id: str | None = None
     manifest: dict[str, Any]
 
 
@@ -114,6 +116,7 @@ class WorkloadTemplateInfo(BaseModel):
 class WorkloadFromTemplateRequest(BaseModel):
     template_id: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+    team_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PreflightRequest(BaseModel):

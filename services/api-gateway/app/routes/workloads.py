@@ -25,8 +25,8 @@ from moiraweave_shared.control_plane import (
     StoredAuditEvent,
     StoredRun,
     StoredRunEvent,
+    StoredWorkload,
     utc_now_iso,
-    workloads_by_name,
 )
 from moiraweave_shared.schemas import RunMessage
 from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_STREAM
@@ -99,6 +99,7 @@ _RATE_LIMIT_CONTROLLER_MUTATION = "60/minute"
 _RATE_LIMIT_DEAD_LETTER_MUTATION = "20/minute"
 _RATE_LIMIT_DEPLOYMENT_OPERATION = "30/minute"
 _RATE_LIMIT_WEBHOOK_INGRESS = "60/minute"
+_WORKLOAD_TEAM_ANNOTATION = "moiraweave.io/team-id"
 
 _PREVIEWABLE_CONTENT_TYPES = {
     "application/json",
@@ -688,12 +689,19 @@ def _template_info(template_id: str) -> WorkloadTemplateInfo:
     )
 
 
-def _workload_info(workload: WorkloadDefinition) -> WorkloadInfo:
+def _workload_info(
+    workload: WorkloadDefinition,
+    *,
+    owner_subject: str | None = None,
+    team_id: str | None = None,
+) -> WorkloadInfo:
     return WorkloadInfo(
         name=workload.metadata.name,
         type=workload.spec.type,
         execution_mode=workload.spec.execution.mode,
         image=workload.spec.image,
+        owner_subject=owner_subject,
+        team_id=team_id,
         manifest=workload.to_manifest(),
     )
 
@@ -1080,9 +1088,26 @@ def _deployment_operation_next_actions(
 async def _all_workloads(
     control_plane: ControlPlaneRepository, settings: Settings
 ) -> dict[str, WorkloadDefinition]:
-    workloads = workloads_by_name(load_workloads(settings.workloads_dir))
-    workloads.update(workloads_by_name(await control_plane.list_workloads()))
-    return workloads
+    records = await _all_workload_records(control_plane, settings)
+    return {name: record.workload for name, record in records.items()}
+
+
+async def _all_workload_records(
+    control_plane: ControlPlaneRepository, settings: Settings
+) -> dict[str, StoredWorkload]:
+    """Return local shared workloads plus API-registered owned workloads."""
+
+    records = {
+        workload.metadata.name: StoredWorkload(workload=workload)
+        for workload in load_workloads(settings.workloads_dir)
+    }
+    records.update(
+        {
+            record.workload.metadata.name: record
+            for record in await control_plane.list_workload_records()
+        }
+    )
+    return records
 
 
 async def _get_workload(
@@ -1099,6 +1124,127 @@ async def _get_workload(
     return workloads[name]
 
 
+def _workload_team_id(workload: WorkloadDefinition) -> str | None:
+    value = workload.metadata.annotations.get(_WORKLOAD_TEAM_ANNOTATION)
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
+async def _get_workload_record(
+    name: str,
+    control_plane: ControlPlaneRepository,
+    settings: Settings,
+) -> StoredWorkload:
+    records = await _all_workload_records(control_plane, settings)
+    record = records.get(name)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workload {name!r} not found",
+        )
+    return record
+
+
+async def _visible_team_ids(
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> set[str]:
+    team_ids: set[str] = set()
+    if current_user.team_id:
+        team_ids.add(current_user.team_id)
+    for membership in await control_plane.list_team_members(
+        subject=current_user.subject
+    ):
+        team_ids.add(membership.team_id)
+    return team_ids
+
+
+async def _workload_visible(
+    record: StoredWorkload,
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> bool:
+    if current_user.role == "admin" or record.user is None:
+        return True
+    team_id = _workload_team_id(record.workload)
+    if team_id:
+        return team_id in await _visible_team_ids(control_plane, current_user)
+    # Platform workloads are shared unless an explicit team annotation scopes them.
+    return True
+
+
+async def _list_visible_workloads(
+    control_plane: ControlPlaneRepository,
+    settings: Settings,
+    current_user: TokenData,
+) -> list[StoredWorkload]:
+    records = await _all_workload_records(control_plane, settings)
+    return [
+        record
+        for _, record in sorted(records.items())
+        if await _workload_visible(record, control_plane, current_user)
+    ]
+
+
+async def _get_visible_workload(
+    name: str,
+    control_plane: ControlPlaneRepository,
+    settings: Settings,
+    current_user: TokenData,
+) -> WorkloadDefinition:
+    record = await _get_workload_record(name, control_plane, settings)
+    if not await _workload_visible(record, control_plane, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workload {name!r} not found",
+        )
+    return record.workload
+
+
+async def _store_owned_workload(
+    workload: WorkloadDefinition,
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> tuple[WorkloadDefinition, str | None]:
+    """Persist a workload without accidentally dropping its team ownership."""
+
+    existing = await control_plane.get_workload_record(workload.metadata.name)
+    existing_team_id = (
+        _workload_team_id(existing.workload) if existing is not None else None
+    )
+    team_id = _workload_team_id(workload)
+    if team_id is None and existing_team_id is not None:
+        annotations = dict(workload.metadata.annotations)
+        annotations[_WORKLOAD_TEAM_ANNOTATION] = existing_team_id
+        workload = workload.model_copy(
+            update={
+                "metadata": workload.metadata.model_copy(
+                    update={"annotations": annotations}
+                )
+            }
+        )
+        team_id = existing_team_id
+
+    if team_id and not any(
+        team.team_id == team_id for team in await control_plane.list_teams()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Team {team_id!r} does not exist",
+        )
+
+    owner_subject = (
+        existing.user if existing and existing.user else current_user.subject
+    )
+    await control_plane.upsert_workload(
+        workload,
+        owner_subject,
+        now=utc_now_iso(),
+    )
+    return workload, owner_subject
+
+
 async def _visible_subjects(
     control_plane: ControlPlaneRepository,
     current_user: TokenData,
@@ -1107,13 +1253,7 @@ async def _visible_subjects(
 
     if current_user.role == "admin":
         return None
-    team_ids: set[str] = set()
-    if current_user.team_id:
-        team_ids.add(current_user.team_id)
-    for membership in await control_plane.list_team_members(
-        subject=current_user.subject
-    ):
-        team_ids.add(membership.team_id)
+    team_ids = await _visible_team_ids(control_plane, current_user)
     subjects = {current_user.subject}
     for team_id in team_ids:
         for member in await control_plane.list_team_members(team_id=team_id):
@@ -2436,10 +2576,19 @@ async def list_workloads(
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> list[WorkloadInfo]:
-    del current_user
     settings = get_settings()
-    workloads = await _all_workloads(control_plane, settings)
-    return [_workload_info(workload) for workload in workloads.values()]
+    return [
+        _workload_info(
+            record.workload,
+            owner_subject=record.user,
+            team_id=_workload_team_id(record.workload),
+        )
+        for record in await _list_visible_workloads(
+            control_plane,
+            settings,
+            current_user,
+        )
+    ]
 
 
 @router.get("/templates", response_model=list[WorkloadTemplateInfo])
@@ -2489,13 +2638,21 @@ async def create_workload_from_template(
     current_user: AdminUser,
 ) -> WorkloadInfo:
     manifest = _template_manifest(body.template_id, body.parameters)
+    if body.team_id:
+        metadata = manifest.setdefault("metadata", {})
+        annotations = metadata.setdefault("annotations", {})
+        annotations[_WORKLOAD_TEAM_ANNOTATION] = body.team_id
     workload = WorkloadDefinition.model_validate(manifest)
-    await control_plane.upsert_workload(
+    workload, owner_subject = await _store_owned_workload(
         workload,
-        current_user.subject,
-        now=utc_now_iso(),
+        control_plane,
+        current_user,
     )
-    return _workload_info(workload)
+    return _workload_info(
+        workload,
+        owner_subject=owner_subject,
+        team_id=_workload_team_id(workload),
+    )
 
 
 @router.post(
@@ -2508,8 +2665,16 @@ async def register_workload(
     control_plane: ControlPlane,
     current_user: AdminUser,
 ) -> WorkloadInfo:
-    await control_plane.upsert_workload(body, current_user.subject, now=utc_now_iso())
-    return _workload_info(body)
+    workload, owner_subject = await _store_owned_workload(
+        body,
+        control_plane,
+        current_user,
+    )
+    return _workload_info(
+        workload,
+        owner_subject=owner_subject,
+        team_id=_workload_team_id(workload),
+    )
 
 
 @router.get("/workloads/{name}", response_model=WorkloadInfo)
@@ -2518,10 +2683,18 @@ async def get_workload(
     control_plane: ControlPlane,
     current_user: CurrentUser,
 ) -> WorkloadInfo:
-    del current_user
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
-    return _workload_info(workload)
+    record = await _get_workload_record(name, control_plane, settings)
+    if not await _workload_visible(record, control_plane, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workload {name!r} not found",
+        )
+    return _workload_info(
+        record.workload,
+        owner_subject=record.user,
+        team_id=_workload_team_id(record.workload),
+    )
 
 
 @router.post(
@@ -2536,7 +2709,7 @@ async def record_workload_deployment(
     current_user: OperatorUser,
 ) -> DeploymentResponse:
     settings = get_settings()
-    await _get_workload(name, control_plane, settings)
+    await _get_visible_workload(name, control_plane, settings, current_user)
     target = "kubernetes" if body.target == "k8s" else body.target
     deployment = await control_plane.upsert_deployment(
         str(uuid4()),
@@ -2574,9 +2747,8 @@ async def workload_deployment_plan(
     target: str = Query(default="local", pattern="^(local|kubernetes|k8s|external)$"),
     env: str = Query(default="dev", min_length=1, max_length=64),
 ) -> DeploymentPlanResponse:
-    del current_user
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     return _deployment_plan_response(workload, target=target, env=env)
 
 
@@ -2589,7 +2761,7 @@ async def workload_preflight(
     current_user: OperatorUser,
 ) -> PreflightResponse:
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     return await _run_preflight(
         workload,
         target=body.target,
@@ -2699,7 +2871,12 @@ async def create_deployment_operation(
     completed_at: str | None = now
 
     try:
-        workload = await _get_workload(body.workload_name, control_plane, settings)
+        workload = await _get_visible_workload(
+            body.workload_name,
+            control_plane,
+            settings,
+            current_user,
+        )
         plan = _deployment_plan_response(
             workload,
             target=normalized_target,
@@ -3536,7 +3713,7 @@ async def list_workload_deployments(
     env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> list[DeploymentResponse]:
     settings = get_settings()
-    await _get_workload(name, control_plane, settings)
+    await _get_visible_workload(name, control_plane, settings, current_user)
     deployments = await _list_visible_deployments(
         control_plane,
         current_user,
@@ -3554,7 +3731,7 @@ async def workload_health(
     env: str | None = Query(default=None, min_length=1, max_length=64),
 ) -> WorkloadHealthResponse:
     settings = get_settings()
-    await _get_workload(name, control_plane, settings)
+    await _get_visible_workload(name, control_plane, settings, current_user)
     deployments = [
         _deployment_response(deployment)
         for deployment in await _list_visible_deployments(
@@ -3590,7 +3767,7 @@ async def submit_run(
 ) -> RunResponse:
     del request
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     response = await _create_run(
         redis,
         control_plane,
@@ -3721,7 +3898,12 @@ async def replay_dead_letter_entry(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Run status {run.status!r} cannot be replayed",
         )
-    await _get_workload(msg.workload_name, control_plane, get_settings())
+    await _get_visible_workload(
+        msg.workload_name,
+        control_plane,
+        get_settings(),
+        current_user,
+    )
 
     replay_payload: dict[EncodableT, EncodableT] = {
         "run_id": msg.run_id,
@@ -4034,7 +4216,7 @@ async def create_agent_session(
     current_user: OperatorUser,
 ) -> AgentSessionResponse:
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     if workload.spec.type != "agent-service":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -4071,7 +4253,7 @@ async def post_agent_message(
     current_user: OperatorUser,
 ) -> AgentMessageResponse:
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     if workload.spec.type != "agent-service":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -4135,7 +4317,7 @@ async def post_channel_agent_message(
     current_user: OperatorUser,
 ) -> AgentMessageResponse:
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     if workload.spec.type != "agent-service":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -4261,7 +4443,7 @@ async def list_agent_sessions(
     current_user: CurrentUser,
 ) -> list[dict[str, Any]]:
     settings = get_settings()
-    workload = await _get_workload(name, control_plane, settings)
+    workload = await _get_visible_workload(name, control_plane, settings, current_user)
     if workload.spec.type != "agent-service":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
