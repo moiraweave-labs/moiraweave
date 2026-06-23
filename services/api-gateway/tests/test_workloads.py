@@ -772,6 +772,34 @@ async def test_artifact_library_filters_by_environment(
     assert run_filtered_out.json() == []
 
 
+async def test_audit_events_filter_by_environment_metadata(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await control_plane.record_audit_event(
+        "testuser",
+        "deployment_operation.apply",
+        "deployment_operation",
+        "operation-dev",
+        metadata={"env": "dev"},
+    )
+    await control_plane.record_audit_event(
+        "testuser",
+        "deployment_operation.apply",
+        "deployment_operation",
+        "operation-prod",
+        metadata={"environment": "prod"},
+    )
+
+    prod = await auth_client.get("/v1/audit-events?env=prod")
+    dev = await auth_client.get("/v1/audit-events?env=dev")
+
+    assert prod.status_code == 200
+    assert [event["resource_id"] for event in prod.json()] == ["operation-prod"]
+    assert dev.status_code == 200
+    assert [event["resource_id"] for event in dev.json()] == ["operation-dev"]
+
+
 async def test_team_scope_covers_sessions_artifacts_deployments_operations_and_audit(
     client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,

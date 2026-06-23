@@ -1296,6 +1296,7 @@ async def _list_visible_audit_events(
     action: str | None = None,
     resource_type: str | None = None,
     resource_id: str | None = None,
+    env: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[StoredAuditEvent]:
@@ -1306,6 +1307,7 @@ async def _list_visible_audit_events(
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
+            env=env,
             limit=limit,
             offset=offset,
         )
@@ -1317,6 +1319,7 @@ async def _list_visible_audit_events(
                 action=action,
                 resource_type=resource_type,
                 resource_id=resource_id,
+                env=env,
                 limit=limit,
                 offset=0,
             )
@@ -2653,6 +2656,7 @@ async def list_audit_events(
     action: str | None = None,
     resource_type: str | None = None,
     resource_id: str | None = None,
+    env: str | None = Query(default=None, min_length=1, max_length=64),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> list[AuditEventResponse]:
@@ -2662,6 +2666,7 @@ async def list_audit_events(
         action=action,
         resource_type=resource_type,
         resource_id=resource_id,
+        env=env,
         limit=limit,
         offset=offset,
     )

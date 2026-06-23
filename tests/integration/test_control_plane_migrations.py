@@ -117,6 +117,15 @@ class _FakePool:
         return _FakeAcquire(self.conn)
 
 
+class _AuditQueryPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        self.calls.append((query, args))
+        return []
+
+
 async def test_postgres_repository_init_only_verifies_alembic_revision() -> None:
     pool = _FakePool(CONTROL_PLANE_ALEMBIC_BASELINE)
     repo = PostgresControlPlaneRepository(pool)
@@ -132,3 +141,30 @@ async def test_postgres_repository_init_fails_without_alembic_baseline() -> None
 
     with pytest.raises(RuntimeError, match="Control-plane schema is not migrated"):
         await repo.init()
+
+
+async def test_postgres_audit_query_filters_environment_metadata() -> None:
+    pool = _AuditQueryPool()
+    repo = PostgresControlPlaneRepository(pool)
+
+    events = await repo.list_audit_events(
+        None,
+        action="deployment_operation.apply",
+        env="prod",
+        limit=25,
+        offset=10,
+    )
+
+    assert events == []
+    assert len(pool.calls) == 1
+    query, args = pool.calls[0]
+    assert "COALESCE(metadata ->> 'env', metadata ->> 'environment')" in query
+    assert args == (
+        None,
+        "deployment_operation.apply",
+        None,
+        None,
+        "prod",
+        25,
+        10,
+    )

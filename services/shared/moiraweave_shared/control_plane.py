@@ -458,6 +458,7 @@ class ControlPlaneRepository(Protocol):
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]: ...
@@ -759,7 +760,8 @@ class InMemoryControlPlaneRepository:
         sessions = [
             session
             for session in self.sessions.values()
-            if session.agent_name == agent_name and (user is None or session.user == user)
+            if session.agent_name == agent_name
+            and (user is None or session.user == user)
         ]
         return sorted(sessions, key=lambda session: session.created_at, reverse=True)
 
@@ -1052,6 +1054,7 @@ class InMemoryControlPlaneRepository:
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]:
@@ -1062,6 +1065,11 @@ class InMemoryControlPlaneRepository:
             and (action is None or event.action == action)
             and (resource_type is None or event.resource_type == resource_type)
             and (resource_id is None or event.resource_id == resource_id)
+            and (
+                env is None
+                or event.metadata.get("env") == env
+                or event.metadata.get("environment") == env
+            )
         ]
         events.sort(key=lambda event: event.timestamp, reverse=True)
         return events[offset : offset + limit]
@@ -2038,6 +2046,7 @@ class PostgresControlPlaneRepository:
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]:
@@ -2050,13 +2059,18 @@ class PostgresControlPlaneRepository:
               AND ($2::text IS NULL OR action = $2)
               AND ($3::text IS NULL OR resource_type = $3)
               AND ($4::text IS NULL OR resource_id = $4)
+              AND (
+                $5::text IS NULL
+                OR COALESCE(metadata ->> 'env', metadata ->> 'environment') = $5
+              )
             ORDER BY timestamp DESC, id DESC
-            LIMIT $5 OFFSET $6
+            LIMIT $6 OFFSET $7
             """,
             actor,
             action,
             resource_type,
             resource_id,
+            env,
             limit,
             offset,
         )
