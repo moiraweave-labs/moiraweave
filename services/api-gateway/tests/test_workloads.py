@@ -1247,6 +1247,50 @@ async def test_agent_history_includes_latest_event_and_artifact_count(
     assert history.json()[0]["artifact_count"] == 1
 
 
+async def test_agent_sessions_and_history_are_paginated(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    session_ids = [
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+    ]
+    for index, session_id in enumerate(session_ids, start=1):
+        await control_plane.create_agent_session(
+            session_id,
+            "hermes",
+            "testuser",
+            created_at=f"2026-01-0{index}T00:00:00+00:00",
+        )
+
+    sessions = await auth_client.get("/v1/agents/hermes/sessions?limit=2&offset=1")
+    assert sessions.status_code == 200
+    assert [item["session_id"] for item in sessions.json()] == session_ids[1::-1]
+
+    for message in ["first", "second", "third"]:
+        await control_plane.append_agent_message(
+            session_ids[0],
+            "user",
+            message,
+            created_at="2026-01-04T00:00:00+00:00",
+        )
+
+    recent = await auth_client.get(
+        f"/v1/agents/hermes/sessions/{session_ids[0]}/messages?limit=2"
+    )
+    assert recent.status_code == 200
+    assert [item["message"] for item in recent.json()] == ["second", "third"]
+
+    older = await auth_client.get(
+        f"/v1/agents/hermes/sessions/{session_ids[0]}/messages"
+        f"?before_id={recent.json()[0]['message_id']}&limit=2"
+    )
+    assert older.status_code == 200
+    assert [item["message"] for item in older.json()] == ["first"]
+
+
 async def test_multiple_agent_workloads_have_independent_sessions(
     auth_client: AsyncClient,
 ) -> None:

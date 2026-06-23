@@ -334,7 +334,12 @@ class ControlPlaneRepository(Protocol):
     async def get_agent_session(self, session_id: str) -> StoredAgentSession | None: ...
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]: ...
 
     async def append_agent_message(
@@ -348,7 +353,11 @@ class ControlPlaneRepository(Protocol):
     ) -> StoredAgentMessage: ...
 
     async def list_agent_messages(
-        self, session_id: str
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
     ) -> list[StoredAgentMessage]: ...
 
     async def upsert_deployment(
@@ -799,7 +808,12 @@ class InMemoryControlPlaneRepository:
         return self.sessions.get(session_id)
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]:
         sessions = [
             session
@@ -807,7 +821,12 @@ class InMemoryControlPlaneRepository:
             if session.agent_name == agent_name
             and (user is None or session.user == user)
         ]
-        return sorted(sessions, key=lambda session: session.created_at, reverse=True)
+        sessions = sorted(
+            sessions, key=lambda session: session.created_at, reverse=True
+        )
+        if limit is None:
+            return sessions[offset:]
+        return sessions[offset : offset + limit]
 
     async def append_agent_message(
         self,
@@ -830,8 +849,21 @@ class InMemoryControlPlaneRepository:
         self.messages.setdefault(session_id, []).append(stored)
         return stored
 
-    async def list_agent_messages(self, session_id: str) -> list[StoredAgentMessage]:
-        return list(self.messages.get(session_id, []))
+    async def list_agent_messages(
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[StoredAgentMessage]:
+        messages = self.messages.get(session_id, [])
+        if before_id is not None:
+            messages = [
+                message for message in messages if int(message.message_id) < before_id
+            ]
+        if limit is not None:
+            return list(messages[-limit:])
+        return list(messages)
 
     async def upsert_deployment(
         self,
@@ -1724,8 +1756,15 @@ class PostgresControlPlaneRepository:
         return _session_from_row(row) if row else None
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]:
+        if limit is None:
+            limit = 2_147_483_647
         rows = await self.pool.fetch(
             """
             SELECT session_id::text, agent_name, user_subject, status,
@@ -1733,9 +1772,12 @@ class PostgresControlPlaneRepository:
             FROM agent_sessions
             WHERE agent_name = $1 AND ($2::text IS NULL OR user_subject = $2)
             ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
             """,
             agent_name,
             user,
+            limit,
+            offset,
         )
         return [_session_from_row(row) for row in rows]
 
@@ -1762,15 +1804,31 @@ class PostgresControlPlaneRepository:
         )
         return _message_from_row(row)
 
-    async def list_agent_messages(self, session_id: str) -> list[StoredAgentMessage]:
+    async def list_agent_messages(
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[StoredAgentMessage]:
+        if limit is None:
+            limit = 2_147_483_647
         rows = await self.pool.fetch(
             """
             SELECT id::text, session_id::text, role, message, context, created_at
-            FROM agent_messages
-            WHERE session_id = $1::uuid
+            FROM (
+                SELECT id, session_id, role, message, context, created_at
+                FROM agent_messages
+                WHERE session_id = $1::uuid
+                  AND ($2::bigint IS NULL OR id < $2::bigint)
+                ORDER BY id DESC
+                LIMIT $3
+            ) AS message_page
             ORDER BY id ASC
             """,
             session_id,
+            before_id,
+            limit,
         )
         return [_message_from_row(row) for row in rows]
 

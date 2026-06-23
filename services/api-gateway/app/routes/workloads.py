@@ -4462,6 +4462,8 @@ async def list_agent_sessions(
     name: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> list[dict[str, Any]]:
     settings = get_settings()
     workload = await _get_visible_workload(name, control_plane, settings, current_user)
@@ -4472,12 +4474,15 @@ async def list_agent_sessions(
         )
     subjects = await _visible_subjects(control_plane, current_user)
     if subjects is None:
-        sessions = await control_plane.list_agent_sessions(name, None)
+        sessions = await control_plane.list_agent_sessions(
+            name, None, limit=limit, offset=offset
+        )
     else:
         sessions = []
         for subject in sorted(subjects):
             sessions.extend(await control_plane.list_agent_sessions(name, subject))
         sessions.sort(key=lambda session: session.created_at, reverse=True)
+        sessions = sessions[offset : offset + limit]
     return [_session_payload(session) for session in sessions]
 
 
@@ -4490,10 +4495,14 @@ async def list_agent_session_messages(
     session_id: str,
     control_plane: ControlPlane,
     current_user: CurrentUser,
+    before_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=100, ge=1, le=200),
 ) -> list[AgentMessageHistoryItem]:
     await _authorize_agent_session(name, session_id, control_plane, current_user)
 
-    messages = await control_plane.list_agent_messages(session_id)
+    messages = await control_plane.list_agent_messages(
+        session_id, before_id=before_id, limit=limit
+    )
     runs = [
         run
         for run in await _list_visible_runs(
@@ -4524,7 +4533,7 @@ async def list_agent_session_messages(
         latest_event = None
         artifact_count = 0
         if run is not None:
-            events = await control_plane.list_run_events(run.run_id)
+            events = await control_plane.list_run_events(run.run_id, limit=1, tail=True)
             latest_event = events[-1] if events else None
             artifact_count = len(await control_plane.list_artifacts(run.run_id))
         enriched.append(

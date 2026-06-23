@@ -50,6 +50,7 @@ def test_baseline_revision_runs_all_legacy_control_plane_migrations() -> None:
         7,
         8,
         9,
+        10,
     ]
 
 
