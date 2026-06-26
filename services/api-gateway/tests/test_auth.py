@@ -563,6 +563,13 @@ async def test_admin_can_update_disable_enable_and_reset_user_password(
     assert updated.status_code == 200
     assert updated.json()["role"] == "viewer"
     assert updated.json()["display_name"] == "Alice Viewer"
+    update_audit = await client.get(
+        "/v1/audit-events?action=user.update",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert update_audit.status_code == 200
+    assert update_audit.json()[0]["resource_id"] == "alice"
+    assert update_audit.json()[0]["metadata"]["role"] == "viewer"
 
     disabled = await client.delete(
         "/auth/users/alice",
@@ -684,6 +691,13 @@ async def test_admin_can_manage_team_and_team_scoped_api_key(
     )
     assert updated_team.status_code == 200
     assert updated_team.json()["name"] == "Agent Platform"
+    team_audit = await client.get(
+        "/v1/audit-events?action=team.update",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert team_audit.status_code == 200
+    assert team_audit.json()[0]["resource_id"] == "agents"
+    assert team_audit.json()[0]["metadata"]["name"] == "Agent Platform"
 
     created_key = await client.post(
         "/auth/api-keys",
