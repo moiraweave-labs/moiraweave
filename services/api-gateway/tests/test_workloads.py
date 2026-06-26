@@ -1860,6 +1860,44 @@ async def test_deployment_operation_plan_and_sync(
     assert audit.json()[0]["metadata"]["workload_name"] == "hermes"
 
 
+async def test_deployment_operations_support_limit_and_offset(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+    for action in ["plan", "sync", "logs"]:
+        response = await auth_client.post(
+            "/v1/deployment-operations",
+            json={"action": action, "workload_name": "hermes", "target": "local"},
+        )
+        assert response.status_code == 202
+
+    full = await auth_client.get("/v1/deployment-operations?limit=10")
+    page = await auth_client.get("/v1/deployment-operations?limit=1&offset=1")
+
+    assert full.status_code == 200
+    assert page.status_code == 200
+    assert page.json() == [full.json()[1]]
+
+
+async def test_audit_events_support_limit_and_offset(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+    for action in ["plan", "sync", "logs"]:
+        response = await auth_client.post(
+            "/v1/deployment-operations",
+            json={"action": action, "workload_name": "hermes", "target": "local"},
+        )
+        assert response.status_code == 202
+
+    full = await auth_client.get("/v1/audit-events?limit=10")
+    page = await auth_client.get("/v1/audit-events?limit=1&offset=1")
+
+    assert full.status_code == 200
+    assert page.status_code == 200
+    assert page.json() == [full.json()[1]]
+
+
 async def test_deployment_operation_apply_is_blocked_without_controller(
     auth_client: AsyncClient,
 ) -> None:
