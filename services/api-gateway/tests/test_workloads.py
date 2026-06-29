@@ -2283,6 +2283,84 @@ async def test_webhook_message_uses_channel_contract(
     assert control_plane.channel_messages[0].user == "webhook:webhook"
 
 
+async def test_webhook_message_can_target_team_scoped_agent(
+    client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "webhook-team-secret")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    admin_token = _token("admin", "admin")
+    for team_id in ["agents-a", "agents-b"]:
+        assert (
+            await client.post(
+                "/auth/teams",
+                json={"team_id": team_id, "name": team_id},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+
+    manifest = _agent_manifest("team-webhook-agent")
+    manifest["metadata"]["annotations"] = {"moiraweave.io/team-id": "agents-a"}
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
+    assert (
+        await client.post(
+            "/v1/workloads",
+            json=manifest,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    allowed_payload = {
+        "external_user_id": "incident-bot",
+        "message": "run scoped diagnostics",
+        "team_id": "agents-a",
+        "metadata": {"source": "incident-webhook"},
+    }
+    allowed_raw = json.dumps(allowed_payload).encode()
+    allowed_signature = hmac.new(
+        b"webhook-team-secret", allowed_raw, sha256
+    ).hexdigest()
+    allowed = await client.post(
+        "/v1/webhooks/webhook/agents/team-webhook-agent/messages",
+        content=allowed_raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={allowed_signature}",
+        },
+    )
+
+    assert allowed.status_code == 202
+    body = allowed.json()
+    run = await control_plane.get_run(body["run_id"])
+    assert run is not None
+    assert run.user == "webhook:webhook"
+    assert control_plane.channel_messages[0].metadata["team_id"] == "agents-a"
+
+    blocked_payload = {
+        "external_user_id": "incident-bot",
+        "message": "wrong scope",
+        "team_id": "agents-b",
+    }
+    blocked_raw = json.dumps(blocked_payload).encode()
+    blocked_signature = hmac.new(
+        b"webhook-team-secret", blocked_raw, sha256
+    ).hexdigest()
+    blocked = await client.post(
+        "/v1/webhooks/webhook/agents/team-webhook-agent/messages",
+        content=blocked_raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={blocked_signature}",
+        },
+    )
+
+    assert blocked.status_code == 404
+    get_settings.cache_clear()
+
+
 async def test_webhook_message_rejects_invalid_signature(
     auth_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

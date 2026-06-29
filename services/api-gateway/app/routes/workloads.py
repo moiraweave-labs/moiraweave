@@ -1652,6 +1652,24 @@ def _verify_webhook_signature(
         )
 
 
+async def _webhook_token_data(
+    channel: str,
+    body: ChannelMessageRequest,
+    control_plane: ControlPlaneRepository,
+) -> TokenData:
+    normalized_channel = channel.strip().lower()
+    team_id = body.team_id
+    if team_id and not any(
+        team.team_id == team_id for team in await control_plane.list_teams()
+    ):
+        raise HTTPException(status_code=404, detail="Team not found")
+    return TokenData(
+        subject=f"webhook:{normalized_channel}",
+        role="operator",
+        team_id=team_id,
+    )
+
+
 def _deployment_probe_url(endpoint: str) -> str:
     parsed = urlparse(endpoint)
     if parsed.path and parsed.path != "/":
@@ -4355,6 +4373,7 @@ async def post_channel_agent_message(
             metadata={
                 "channel": channel,
                 "external_user_id": body.external_user_id,
+                **({"team_id": body.team_id} if body.team_id else {}),
                 **body.metadata,
             },
             created_at=utc_now_iso(),
@@ -4366,6 +4385,7 @@ async def post_channel_agent_message(
     message_context = {
         "channel": channel,
         "external_user_id": body.external_user_id,
+        **({"team_id": body.team_id} if body.team_id else {}),
         **body.metadata,
     }
     run = await _create_run(
@@ -4397,7 +4417,10 @@ async def post_channel_agent_message(
         body.message,
         current_user.subject,
         run_id=run.run_id,
-        metadata=body.metadata,
+        metadata={
+            **({"team_id": body.team_id} if body.team_id else {}),
+            **body.metadata,
+        },
         created_at=created_at,
     )
     await _audit(
@@ -4412,6 +4435,7 @@ async def post_channel_agent_message(
             "message_id": message.message_id,
             "channel": channel,
             "external_user_id": body.external_user_id,
+            "team_id": body.team_id,
         },
     )
     return AgentMessageResponse(
@@ -4444,9 +4468,7 @@ async def post_signed_webhook_agent_message(
         request.headers.get("x-moiraweave-signature"),
         raw_body,
     )
-    webhook_user = TokenData(
-        subject=f"webhook:{channel.strip().lower()}", role="operator"
-    )
+    webhook_user = await _webhook_token_data(channel, body, control_plane)
     return await post_channel_agent_message(
         channel,
         name,
