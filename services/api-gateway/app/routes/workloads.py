@@ -9,7 +9,7 @@ import logging
 import mimetypes
 import os
 import re
-from collections.abc import AsyncGenerator  # noqa: TC003
+from collections.abc import AsyncGenerator, Mapping  # noqa: TC003
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -712,6 +712,21 @@ def _run_response(run: StoredRun) -> RunStatusResponse:
 
 def _event_response(event: StoredRunEvent) -> RunEvent:
     return RunEvent(**event.model_dump())
+
+
+def _redis_stream_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def _redis_stream_fields(fields: Mapping[Any, Any] | None) -> dict[str, Any]:
+    if fields is None:
+        return {}
+    return {
+        str(_redis_stream_value(key)): _redis_stream_value(value)
+        for key, value in fields.items()
+    }
 
 
 def _dead_letter_entry(message_id: str, fields: dict[str, Any]) -> DeadLetterEntry:
@@ -3843,9 +3858,11 @@ async def list_dead_letter_entries(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[DeadLetterEntry]:
     del current_user
-    entries = await redis.xrevrange(DEAD_LETTER_STREAM, count=limit)
+    entries: Any = await redis.xrevrange(DEAD_LETTER_STREAM, count=limit)
     return [
-        _dead_letter_entry(str(message_id), dict(fields))
+        _dead_letter_entry(
+            str(_redis_stream_value(message_id)), _redis_stream_fields(fields)
+        )
         for message_id, fields in entries
     ]
 
@@ -3860,7 +3877,7 @@ async def purge_dead_letter_entry(
     current_user: OperatorUser,
 ) -> DeadLetterEntry:
     del request
-    entries = await redis.xrange(
+    entries: Any = await redis.xrange(
         DEAD_LETTER_STREAM,
         min=message_id,
         max=message_id,
@@ -3872,7 +3889,10 @@ async def purge_dead_letter_entry(
             detail="Dead-letter entry not found",
         )
     _message_id, fields = entries[0]
-    entry = _dead_letter_entry(str(_message_id), dict(fields))
+    entry = _dead_letter_entry(
+        str(_redis_stream_value(_message_id)),
+        _redis_stream_fields(fields),
+    )
     deleted = await redis.xdel(DEAD_LETTER_STREAM, message_id)
     if not deleted:
         raise HTTPException(
@@ -3908,7 +3928,7 @@ async def replay_dead_letter_entry(
     current_user: OperatorUser,
 ) -> DeadLetterReplayResponse:
     del request
-    entries = await redis.xrange(
+    entries: Any = await redis.xrange(
         DEAD_LETTER_STREAM,
         min=message_id,
         max=message_id,
@@ -3920,7 +3940,10 @@ async def replay_dead_letter_entry(
             detail="Dead-letter entry not found",
         )
     _message_id, fields = entries[0]
-    entry = _dead_letter_entry(str(_message_id), dict(fields))
+    entry = _dead_letter_entry(
+        str(_redis_stream_value(_message_id)),
+        _redis_stream_fields(fields),
+    )
     try:
         msg = RunMessage.model_validate(entry.payload)
     except ValidationError as exc:

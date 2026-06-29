@@ -13,7 +13,12 @@ from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_ST
 
 from app.config import get_settings
 from app.models.workloads import DeploymentResponse
-from app.routes.workloads import _deployment_probe_url, _probe_deployment_endpoint
+from app.routes.workloads import (
+    _dead_letter_entry,
+    _deployment_probe_url,
+    _probe_deployment_endpoint,
+    _redis_stream_fields,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -136,6 +141,22 @@ async def test_probe_deployment_endpoint_rejects_invalid_url() -> None:
     ok, reason = result
     assert ok is False
     assert "not a valid HTTP URL" in reason
+
+
+def test_redis_stream_fields_normalizes_redis_8_typed_entries() -> None:
+    fields = _redis_stream_fields(
+        {
+            b"source_stream": b"moiraweave:runs:dead-letter",
+            b"source_id": b"1-0",
+            b"reason": b"runtime_unavailable",
+            b"payload": b'{"run_id": "run-redis-8"}',
+        }
+    )
+    entry = _dead_letter_entry("2-0", fields)
+
+    assert fields["reason"] == "runtime_unavailable"
+    assert entry.payload == {"run_id": "run-redis-8"}
+    assert _redis_stream_fields(None) == {}
 
 
 async def test_register_and_list_workloads(auth_client: AsyncClient) -> None:
