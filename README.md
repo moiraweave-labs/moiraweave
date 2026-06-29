@@ -63,7 +63,8 @@ Inbound channels use the same authenticated session/run path as the UI. Channel
 connectors can call `/v1/channels/{channel}/agents/{name}/messages`; webhook
 connectors can use the alias `/v1/webhooks/{channel}/agents/{name}/messages`
 with an HMAC-signed body. For team-scoped workloads, include `team_id` in the
-signed JSON body so webhook messages inherit that team scope.
+signed JSON body so webhook messages inherit that team scope. Bearer channel
+requests may also include `team_id`, but it must be visible to the caller.
 Deployment views are environment-scoped, and `/v1/environments` summarizes the
 environments visible to the current user.
 

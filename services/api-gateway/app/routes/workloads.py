@@ -1270,6 +1270,25 @@ async def _subject_visible(
     return subjects is None or subject in subjects
 
 
+async def _authorize_channel_message_team_scope(
+    body: ChannelMessageRequest,
+    control_plane: ControlPlaneRepository,
+    current_user: TokenData,
+) -> None:
+    team_id = body.team_id
+    if team_id is None:
+        return
+    if not any(team.team_id == team_id for team in await control_plane.list_teams()):
+        raise HTTPException(status_code=404, detail="Team not found")
+    if current_user.role == "admin":
+        return
+    if team_id not in await _visible_team_ids(control_plane, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current credential cannot use the requested team scope",
+        )
+
+
 async def _list_visible_runs(
     control_plane: ControlPlaneRepository,
     current_user: TokenData,
@@ -4363,6 +4382,7 @@ async def post_channel_agent_message(
             detail=f"Workload {name!r} is not an agent-service",
         )
     channel = _validate_agent_channel(workload, channel)
+    await _authorize_channel_message_team_scope(body, control_plane, current_user)
 
     session_id = body.session_id
     if session_id is None:

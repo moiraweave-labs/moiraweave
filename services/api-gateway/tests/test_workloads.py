@@ -2247,6 +2247,72 @@ async def test_channel_message_creates_session_run_and_audit_record(
     assert audit.json()[0]["metadata"]["run_id"] == body["run_id"]
 
 
+async def test_channel_message_team_scope_must_be_visible_to_bearer_user(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    for subject in ["alice", "bob"]:
+        assert (
+            await client.post(
+                "/auth/users",
+                json={
+                    "subject": subject,
+                    "password": "correct-horse",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+    assert (
+        await client.post(
+            "/auth/teams",
+            json={"team_id": "agents-a", "name": "Agents A"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+    assert (
+        await client.post(
+            "/auth/teams/agents-a/members",
+            json={"subject": "alice", "role": "operator"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    manifest = _agent_manifest("channel-scope-agent")
+    manifest["spec"]["secrets"] = []
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "telegram"]}
+    assert (
+        await client.post(
+            "/v1/workloads",
+            json=manifest,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    blocked = await client.post(
+        "/v1/channels/telegram/agents/channel-scope-agent/messages",
+        json={
+            "external_user_id": "telegram-user-1",
+            "message": "spoofed scope",
+            "team_id": "agents-a",
+        },
+        headers={"Authorization": f"Bearer {_token('bob', 'operator')}"},
+    )
+    allowed = await client.post(
+        "/v1/channels/telegram/agents/channel-scope-agent/messages",
+        json={
+            "external_user_id": "telegram-user-1",
+            "message": "valid scope",
+            "team_id": "agents-a",
+        },
+        headers={"Authorization": f"Bearer {_token('alice', 'operator')}"},
+    )
+
+    assert blocked.status_code == 403
+    assert "requested team scope" in blocked.json()["detail"]
+    assert allowed.status_code == 202
+
+
 async def test_webhook_message_uses_channel_contract(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
