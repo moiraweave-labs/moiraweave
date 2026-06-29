@@ -290,4 +290,20 @@ CONTROL_PLANE_MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE controller_id IS NOT NULL;
         """,
     ),
+    (
+        9,
+        """
+        CREATE INDEX IF NOT EXISTS run_events_run_id_id_idx
+            ON run_events (run_id, id ASC);
+        """,
+    ),
+    (
+        10,
+        """
+        CREATE INDEX IF NOT EXISTS agent_sessions_agent_created_idx
+            ON agent_sessions (agent_name, created_at DESC);
+        CREATE INDEX IF NOT EXISTS agent_messages_session_id_idx
+            ON agent_messages (session_id, id ASC);
+        """,
+    ),
 )

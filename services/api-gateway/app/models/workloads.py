@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class WorkloadInfo(BaseModel):
@@ -12,6 +12,8 @@ class WorkloadInfo(BaseModel):
     type: str
     execution_mode: str
     image: str | None = None
+    owner_subject: str | None = None
+    team_id: str | None = None
     manifest: dict[str, Any]
 
 
@@ -114,6 +116,7 @@ class WorkloadTemplateInfo(BaseModel):
 class WorkloadFromTemplateRequest(BaseModel):
     template_id: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+    team_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PreflightRequest(BaseModel):
@@ -346,4 +349,15 @@ class ChannelMessageRequest(BaseModel):
     external_user_id: str
     message: str
     session_id: str | None = None
+    team_id: str | None = Field(default=None, min_length=1, max_length=80)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("team_id")
+    @classmethod
+    def strip_team_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be empty")
+        return value
