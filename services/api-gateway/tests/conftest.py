@@ -4,6 +4,7 @@ Environment is configured here at module level so that ``app.main``
 imports (which call ``get_settings()``) succeed without a real .env file.
 """
 
+import hashlib
 import os
 import pathlib
 import sys
@@ -104,6 +105,7 @@ async def client(
     fake_redis: FakeRedis,
     mock_qdrant: MagicMock,
     control_plane: InMemoryControlPlaneRepository,
+    request: pytest.FixtureRequest,
 ) -> AsyncGenerator[AsyncClient]:
     """Unauthenticated test client — auth is NOT bypassed.
 
@@ -115,9 +117,13 @@ async def client(
     app.state.control_plane = control_plane
     app.state.search_enabled = True
 
+    client_host = (
+        f"pytest-{hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:16]}"
+    )
     try:
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app, client=(client_host, 123)),
+            base_url="http://test",
         ) as ac:
             yield ac
     finally:
