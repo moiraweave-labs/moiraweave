@@ -49,6 +49,8 @@ def test_baseline_revision_runs_all_legacy_control_plane_migrations() -> None:
         6,
         7,
         8,
+        9,
+        10,
     ]
 
 
@@ -117,6 +119,19 @@ class _FakePool:
         return _FakeAcquire(self.conn)
 
 
+class _AuditQueryPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        self.calls.append((query, args))
+        return []
+
+    async def fetchrow(self, query: str, *args: object) -> None:
+        self.calls.append((query, args))
+        return None
+
+
 async def test_postgres_repository_init_only_verifies_alembic_revision() -> None:
     pool = _FakePool(CONTROL_PLANE_ALEMBIC_BASELINE)
     repo = PostgresControlPlaneRepository(pool)
@@ -132,3 +147,52 @@ async def test_postgres_repository_init_fails_without_alembic_baseline() -> None
 
     with pytest.raises(RuntimeError, match="Control-plane schema is not migrated"):
         await repo.init()
+
+
+async def test_postgres_audit_query_filters_environment_metadata() -> None:
+    pool = _AuditQueryPool()
+    repo = PostgresControlPlaneRepository(pool)
+
+    events = await repo.list_audit_events(
+        None,
+        action="deployment_operation.apply",
+        env="prod",
+        limit=25,
+        offset=10,
+    )
+
+    assert events == []
+    assert len(pool.calls) == 1
+    query, args = pool.calls[0]
+    assert "COALESCE(metadata ->> 'env', metadata ->> 'environment')" in query
+    assert args == (
+        None,
+        "deployment_operation.apply",
+        None,
+        None,
+        "prod",
+        25,
+        10,
+    )
+
+
+async def test_postgres_workload_record_queries_include_persistent_owner() -> None:
+    pool = _AuditQueryPool()
+    repo = PostgresControlPlaneRepository(pool)
+
+    records = await repo.list_workload_records()
+    record = await repo.get_workload_record("team-a-agent")
+
+    assert records == []
+    assert record is None
+    assert len(pool.calls) == 2
+    assert (
+        "SELECT manifest, user_subject FROM workloads ORDER BY name ASC"
+        in pool.calls[0][0]
+    )
+    assert pool.calls[0][1] == ()
+    assert (
+        "SELECT manifest, user_subject FROM workloads WHERE name = $1"
+        in pool.calls[1][0]
+    )
+    assert pool.calls[1][1] == ("team-a-agent",)
