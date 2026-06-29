@@ -1,13 +1,33 @@
 """Tests for /auth/token endpoint."""
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import jwt
 import pytest
+import yaml
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.config import get_settings
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _overlay_env(values_file: str) -> dict[str, str]:
+    data = yaml.safe_load(
+        (ROOT / "infra" / "helm" / "moiraweave" / values_file).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert isinstance(data, dict)
+    api_gateway = data.get("apiGateway")
+    assert isinstance(api_gateway, dict)
+    return {
+        str(item["name"]): str(item["value"])
+        for item in api_gateway.get("extraEnv", [])
+        if isinstance(item, dict) and "name" in item and "value" in item
+    }
 
 
 def _token(subject: str, role: str) -> str:
@@ -155,6 +175,68 @@ async def test_bootstrap_admin_only_when_demo_auth_disabled(
     )
     assert repeated.status_code == 409
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "values_file",
+    ["values-staging.yaml", "values-prod.yaml"],
+    ids=["staging", "prod"],
+)
+async def test_production_overlay_supports_persistent_auth_lifecycle(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    values_file: str,
+) -> None:
+    overlay_env = _overlay_env(values_file)
+    assert overlay_env["DEMO_AUTH_ENABLED"] == "false"
+    monkeypatch.setenv("DEMO_AUTH_ENABLED", overlay_env["DEMO_AUTH_ENABLED"])
+    get_settings.cache_clear()
+
+    demo_login = await client.post(
+        "/auth/token",
+        json={"username": "admin", "password": "demo-password"},
+    )
+    assert demo_login.status_code == 401
+
+    bootstrap = await client.post(
+        "/auth/bootstrap/admin",
+        json={"subject": "owner", "password": "very-strong-password"},
+    )
+    assert bootstrap.status_code == 201
+    admin_token = bootstrap.json()["access_token"]
+
+    user = await client.post(
+        "/auth/users",
+        json={
+            "subject": "operator",
+            "password": "correct-horse",
+            "role": "operator",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert user.status_code == 201
+
+    persistent_login = await client.post(
+        "/auth/token",
+        json={"username": "operator", "password": "correct-horse"},
+    )
+    assert persistent_login.status_code == 200
+    assert persistent_login.json()["subject"] == "operator"
+
+    api_key = await client.post(
+        "/auth/api-keys",
+        json={"name": "automation", "subject": "operator", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert api_key.status_code == 201
+
+    api_key_profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {api_key.json()['secret']}"},
+    )
+    assert api_key_profile.status_code == 200
+    assert api_key_profile.json()["credential_type"] == "api_key"
+    assert api_key_profile.json()["subject"] == "operator"
 
 
 async def test_token_allows_authenticated_request(client: AsyncClient) -> None:
@@ -481,6 +563,13 @@ async def test_admin_can_update_disable_enable_and_reset_user_password(
     assert updated.status_code == 200
     assert updated.json()["role"] == "viewer"
     assert updated.json()["display_name"] == "Alice Viewer"
+    update_audit = await client.get(
+        "/v1/audit-events?action=user.update",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert update_audit.status_code == 200
+    assert update_audit.json()[0]["resource_id"] == "alice"
+    assert update_audit.json()[0]["metadata"]["role"] == "viewer"
 
     disabled = await client.delete(
         "/auth/users/alice",
@@ -602,6 +691,13 @@ async def test_admin_can_manage_team_and_team_scoped_api_key(
     )
     assert updated_team.status_code == 200
     assert updated_team.json()["name"] == "Agent Platform"
+    team_audit = await client.get(
+        "/v1/audit-events?action=team.update",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert team_audit.status_code == 200
+    assert team_audit.json()[0]["resource_id"] == "agents"
+    assert team_audit.json()[0]["metadata"]["name"] == "Agent Platform"
 
     created_key = await client.post(
         "/auth/api-keys",

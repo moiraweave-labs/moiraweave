@@ -13,7 +13,12 @@ from moiraweave_shared.streams import CONSUMER_GROUP, DEAD_LETTER_STREAM, RUN_ST
 
 from app.config import get_settings
 from app.models.workloads import DeploymentResponse
-from app.routes.workloads import _deployment_probe_url, _probe_deployment_endpoint
+from app.routes.workloads import (
+    _dead_letter_entry,
+    _deployment_probe_url,
+    _probe_deployment_endpoint,
+    _redis_stream_fields,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -136,6 +141,22 @@ async def test_probe_deployment_endpoint_rejects_invalid_url() -> None:
     ok, reason = result
     assert ok is False
     assert "not a valid HTTP URL" in reason
+
+
+def test_redis_stream_fields_normalizes_redis_8_typed_entries() -> None:
+    fields = _redis_stream_fields(
+        {
+            b"source_stream": b"moiraweave:runs:dead-letter",
+            b"source_id": b"1-0",
+            b"reason": b"runtime_unavailable",
+            b"payload": b'{"run_id": "run-redis-8"}',
+        }
+    )
+    entry = _dead_letter_entry("2-0", fields)
+
+    assert fields["reason"] == "runtime_unavailable"
+    assert entry.payload == {"run_id": "run-redis-8"}
+    assert _redis_stream_fields(None) == {}
 
 
 async def test_register_and_list_workloads(auth_client: AsyncClient) -> None:
@@ -673,6 +694,56 @@ async def test_events_and_artifacts_are_returned(
     assert artifacts.json()[0]["session_id"] is None
 
 
+async def test_run_events_support_incremental_cursor_reads(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await control_plane.create_run(
+        "run-event-cursor",
+        "hermes",
+        {},
+        "testuser",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    for index in range(3):
+        await control_plane.append_run_event(
+            "run-event-cursor",
+            f"agent.progress.{index}",
+            f"Progress event {index}",
+        )
+
+    first_page = await auth_client.get("/v1/runs/run-event-cursor/events?limit=1")
+    assert first_page.status_code == 200
+    first_event = first_page.json()[0]
+
+    incremental = await auth_client.get(
+        f"/v1/runs/run-event-cursor/events?after_id={first_event['id']}"
+    )
+    assert incremental.status_code == 200
+    assert [event["type"] for event in incremental.json()] == [
+        "agent.progress.1",
+        "agent.progress.2",
+    ]
+
+    recent = await auth_client.get("/v1/runs/run-event-cursor/events?limit=2&tail=true")
+    assert recent.status_code == 200
+    assert [event["type"] for event in recent.json()] == [
+        "agent.progress.1",
+        "agent.progress.2",
+    ]
+
+    conflicting_cursor = await auth_client.get(
+        f"/v1/runs/run-event-cursor/events?after_id={first_event['id']}&tail=true"
+    )
+    assert conflicting_cursor.status_code == 422
+
+    invalid_last_event = await auth_client.get(
+        "/v1/runs/run-event-cursor/events/stream",
+        headers={"Last-Event-ID": "not-a-number"},
+    )
+    assert invalid_last_event.status_code == 422
+
+
 async def test_artifact_library_filters_by_workload_session_and_type(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
@@ -770,6 +841,130 @@ async def test_artifact_library_filters_by_environment(
     assert dev_hermes.json() == []
     assert run_filtered_out.status_code == 200
     assert run_filtered_out.json() == []
+
+
+async def test_audit_events_filter_by_environment_metadata(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await control_plane.record_audit_event(
+        "testuser",
+        "deployment_operation.apply",
+        "deployment_operation",
+        "operation-dev",
+        metadata={"env": "dev"},
+    )
+    await control_plane.record_audit_event(
+        "testuser",
+        "deployment_operation.apply",
+        "deployment_operation",
+        "operation-prod",
+        metadata={"environment": "prod"},
+    )
+
+    prod = await auth_client.get("/v1/audit-events?env=prod")
+    dev = await auth_client.get("/v1/audit-events?env=dev")
+
+    assert prod.status_code == 200
+    assert [event["resource_id"] for event in prod.json()] == ["operation-prod"]
+    assert dev.status_code == 200
+    assert [event["resource_id"] for event in dev.json()] == ["operation-dev"]
+
+
+async def test_workloads_are_scoped_by_persisted_team_ownership(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    for subject in ["alice", "bob"]:
+        assert (
+            await client.post(
+                "/auth/users",
+                json={
+                    "subject": subject,
+                    "password": "correct-horse",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+    for team_id, member in [("agents-a", "alice"), ("agents-b", "bob")]:
+        assert (
+            await client.post(
+                "/auth/teams",
+                json={"team_id": team_id, "name": team_id},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+        assert (
+            await client.post(
+                f"/auth/teams/{team_id}/members",
+                json={"subject": member, "role": "operator"},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+
+    manifest = _agent_manifest("team-a-agent")
+    manifest["metadata"]["annotations"] = {"moiraweave.io/team-id": "agents-a"}
+    created = await client.post(
+        "/v1/workloads",
+        json=manifest,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["owner_subject"] == "admin"
+    assert created.json()["team_id"] == "agents-a"
+
+    template_created = await client.post(
+        "/v1/workloads/from-template",
+        json={"template_id": "demo-agent", "team_id": "agents-a"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert template_created.status_code == 201
+    assert template_created.json()["team_id"] == "agents-a"
+
+    alice_token = _token("alice", "operator")
+    bob_token = _token("bob", "operator")
+    alice_workloads = await client.get(
+        "/v1/workloads",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    bob_workloads = await client.get(
+        "/v1/workloads",
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+    alice_get = await client.get(
+        "/v1/workloads/team-a-agent",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+    bob_get = await client.get(
+        "/v1/workloads/team-a-agent",
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+    bob_run = await client.post(
+        "/v1/workloads/team-a-agent/runs",
+        json={"payload": {"message": "not allowed"}},
+        headers={"Authorization": f"Bearer {bob_token}"},
+    )
+
+    alice_names = {item["name"] for item in alice_workloads.json()}
+    bob_names = {item["name"] for item in bob_workloads.json()}
+    assert {"demo-agent", "team-a-agent"}.issubset(alice_names)
+    assert {"demo-agent", "team-a-agent"}.isdisjoint(bob_names)
+    assert alice_get.status_code == 200
+    assert bob_get.status_code == 404
+    assert bob_run.status_code == 404
+
+    unscoped_update = _agent_manifest("team-a-agent")
+    updated = await client.post(
+        "/v1/workloads",
+        json=unscoped_update,
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert updated.status_code == 201
+    assert updated.json()["team_id"] == "agents-a"
 
 
 async def test_team_scope_covers_sessions_artifacts_deployments_operations_and_audit(
@@ -1071,6 +1266,50 @@ async def test_agent_history_includes_latest_event_and_artifact_count(
     assert history.status_code == 200
     assert history.json()[0]["latest_event"]["type"] == "executor.agent.call"
     assert history.json()[0]["artifact_count"] == 1
+
+
+async def test_agent_sessions_and_history_are_paginated(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await _register(auth_client)
+    session_ids = [
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000003",
+    ]
+    for index, session_id in enumerate(session_ids, start=1):
+        await control_plane.create_agent_session(
+            session_id,
+            "hermes",
+            "testuser",
+            created_at=f"2026-01-0{index}T00:00:00+00:00",
+        )
+
+    sessions = await auth_client.get("/v1/agents/hermes/sessions?limit=2&offset=1")
+    assert sessions.status_code == 200
+    assert [item["session_id"] for item in sessions.json()] == session_ids[1::-1]
+
+    for message in ["first", "second", "third"]:
+        await control_plane.append_agent_message(
+            session_ids[0],
+            "user",
+            message,
+            created_at="2026-01-04T00:00:00+00:00",
+        )
+
+    recent = await auth_client.get(
+        f"/v1/agents/hermes/sessions/{session_ids[0]}/messages?limit=2"
+    )
+    assert recent.status_code == 200
+    assert [item["message"] for item in recent.json()] == ["second", "third"]
+
+    older = await auth_client.get(
+        f"/v1/agents/hermes/sessions/{session_ids[0]}/messages"
+        f"?before_id={recent.json()[0]['message_id']}&limit=2"
+    )
+    assert older.status_code == 200
+    assert [item["message"] for item in older.json()] == ["first"]
 
 
 async def test_multiple_agent_workloads_have_independent_sessions(
@@ -1642,6 +1881,44 @@ async def test_deployment_operation_plan_and_sync(
     assert audit.json()[0]["metadata"]["workload_name"] == "hermes"
 
 
+async def test_deployment_operations_support_limit_and_offset(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+    for action in ["plan", "sync", "logs"]:
+        response = await auth_client.post(
+            "/v1/deployment-operations",
+            json={"action": action, "workload_name": "hermes", "target": "local"},
+        )
+        assert response.status_code == 202
+
+    full = await auth_client.get("/v1/deployment-operations?limit=10")
+    page = await auth_client.get("/v1/deployment-operations?limit=1&offset=1")
+
+    assert full.status_code == 200
+    assert page.status_code == 200
+    assert page.json() == [full.json()[1]]
+
+
+async def test_audit_events_support_limit_and_offset(
+    auth_client: AsyncClient,
+) -> None:
+    await _register(auth_client)
+    for action in ["plan", "sync", "logs"]:
+        response = await auth_client.post(
+            "/v1/deployment-operations",
+            json={"action": action, "workload_name": "hermes", "target": "local"},
+        )
+        assert response.status_code == 202
+
+    full = await auth_client.get("/v1/audit-events?limit=10")
+    page = await auth_client.get("/v1/audit-events?limit=1&offset=1")
+
+    assert full.status_code == 200
+    assert page.status_code == 200
+    assert page.json() == [full.json()[1]]
+
+
 async def test_deployment_operation_apply_is_blocked_without_controller(
     auth_client: AsyncClient,
 ) -> None:
@@ -1991,6 +2268,72 @@ async def test_channel_message_creates_session_run_and_audit_record(
     assert audit.json()[0]["metadata"]["run_id"] == body["run_id"]
 
 
+async def test_channel_message_team_scope_must_be_visible_to_bearer_user(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    for subject in ["alice", "bob"]:
+        assert (
+            await client.post(
+                "/auth/users",
+                json={
+                    "subject": subject,
+                    "password": "correct-horse",
+                    "role": "operator",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+    assert (
+        await client.post(
+            "/auth/teams",
+            json={"team_id": "agents-a", "name": "Agents A"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+    assert (
+        await client.post(
+            "/auth/teams/agents-a/members",
+            json={"subject": "alice", "role": "operator"},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    manifest = _agent_manifest("channel-scope-agent")
+    manifest["spec"]["secrets"] = []
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "telegram"]}
+    assert (
+        await client.post(
+            "/v1/workloads",
+            json=manifest,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    blocked = await client.post(
+        "/v1/channels/telegram/agents/channel-scope-agent/messages",
+        json={
+            "external_user_id": "telegram-user-1",
+            "message": "spoofed scope",
+            "team_id": "agents-a",
+        },
+        headers={"Authorization": f"Bearer {_token('bob', 'operator')}"},
+    )
+    allowed = await client.post(
+        "/v1/channels/telegram/agents/channel-scope-agent/messages",
+        json={
+            "external_user_id": "telegram-user-1",
+            "message": "valid scope",
+            "team_id": "agents-a",
+        },
+        headers={"Authorization": f"Bearer {_token('alice', 'operator')}"},
+    )
+
+    assert blocked.status_code == 403
+    assert "requested team scope" in blocked.json()["detail"]
+    assert allowed.status_code == 202
+
+
 async def test_webhook_message_uses_channel_contract(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
@@ -2025,6 +2368,84 @@ async def test_webhook_message_uses_channel_contract(
     assert control_plane.channel_messages[0].channel == "webhook"
     assert control_plane.channel_messages[0].metadata["source"] == "incident-webhook"
     assert control_plane.channel_messages[0].user == "webhook:webhook"
+
+
+async def test_webhook_message_can_target_team_scoped_agent(
+    client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "webhook-team-secret")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    admin_token = _token("admin", "admin")
+    for team_id in ["agents-a", "agents-b"]:
+        assert (
+            await client.post(
+                "/auth/teams",
+                json={"team_id": team_id, "name": team_id},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        ).status_code == 201
+
+    manifest = _agent_manifest("team-webhook-agent")
+    manifest["metadata"]["annotations"] = {"moiraweave.io/team-id": "agents-a"}
+    manifest["spec"]["agent"] = {"exposedChannels": ["ui", "api", "webhook"]}
+    assert (
+        await client.post(
+            "/v1/workloads",
+            json=manifest,
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    ).status_code == 201
+
+    allowed_payload = {
+        "external_user_id": "incident-bot",
+        "message": "run scoped diagnostics",
+        "team_id": "agents-a",
+        "metadata": {"source": "incident-webhook"},
+    }
+    allowed_raw = json.dumps(allowed_payload).encode()
+    allowed_signature = hmac.new(
+        b"webhook-team-secret", allowed_raw, sha256
+    ).hexdigest()
+    allowed = await client.post(
+        "/v1/webhooks/webhook/agents/team-webhook-agent/messages",
+        content=allowed_raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={allowed_signature}",
+        },
+    )
+
+    assert allowed.status_code == 202
+    body = allowed.json()
+    run = await control_plane.get_run(body["run_id"])
+    assert run is not None
+    assert run.user == "webhook:webhook"
+    assert control_plane.channel_messages[0].metadata["team_id"] == "agents-a"
+
+    blocked_payload = {
+        "external_user_id": "incident-bot",
+        "message": "wrong scope",
+        "team_id": "agents-b",
+    }
+    blocked_raw = json.dumps(blocked_payload).encode()
+    blocked_signature = hmac.new(
+        b"webhook-team-secret", blocked_raw, sha256
+    ).hexdigest()
+    blocked = await client.post(
+        "/v1/webhooks/webhook/agents/team-webhook-agent/messages",
+        content=blocked_raw,
+        headers={
+            "Content-Type": "application/json",
+            "X-MoiraWeave-Signature": f"sha256={blocked_signature}",
+        },
+    )
+
+    assert blocked.status_code == 404
+    get_settings.cache_clear()
 
 
 async def test_webhook_message_rejects_invalid_signature(

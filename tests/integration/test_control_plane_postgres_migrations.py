@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 from typing import Any
 
 import asyncpg  # type: ignore[import-untyped]
 import pytest
 from moiraweave_shared.alembic.control_plane_schema import (
     CONTROL_PLANE_ALEMBIC_BASELINE,
+    CONTROL_PLANE_MIGRATIONS,
 )
 from moiraweave_shared.alembic_runner import upgrade_control_plane
 from moiraweave_shared.control_plane import PostgresControlPlaneRepository
+
+baseline = import_module(
+    "moiraweave_shared.alembic.versions.20260612_0001_control_plane_baseline"
+)
 
 _POSTGRES_MIGRATION_DSN = os.getenv("MOIRAWEAVE_POSTGRES_MIGRATION_DSN")
 _POSTGRES_MIGRATION_DSN_IS_DISPOSABLE = (
@@ -36,6 +42,32 @@ async def _reset_public_schema() -> None:
     try:
         await conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         await conn.execute("CREATE SCHEMA public")
+    finally:
+        await conn.close()
+
+
+async def _apply_legacy_control_plane_schema() -> None:
+    conn = await _connect()
+    try:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS control_plane_migrations (
+                version integer PRIMARY KEY,
+                applied_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        for version, sql in CONTROL_PLANE_MIGRATIONS:
+            for statement in baseline._split_sql_statements(sql):
+                await conn.execute(statement)
+            await conn.execute(
+                """
+                INSERT INTO control_plane_migrations (version)
+                VALUES ($1)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                version,
+            )
     finally:
         await conn.close()
 
@@ -133,6 +165,39 @@ async def test_postgres_upgrade_from_empty_database_creates_expected_schema() ->
     await repo.close()
 
 
+async def test_postgres_upgrade_from_existing_baseline_schema_stamps_alembic() -> None:
+    assert _POSTGRES_MIGRATION_DSN is not None
+    await _reset_public_schema()
+    await _apply_legacy_control_plane_schema()
+
+    conn = await _connect()
+    try:
+        await conn.execute(
+            """
+            INSERT INTO workloads (name, manifest, user_subject)
+            VALUES ('legacy-agent', '{}'::jsonb, 'legacy-user')
+            """
+        )
+    finally:
+        await conn.close()
+
+    await upgrade_control_plane(_POSTGRES_MIGRATION_DSN)
+
+    assert (
+        await _fetchval("SELECT version_num FROM alembic_version LIMIT 1")
+        == CONTROL_PLANE_ALEMBIC_BASELINE
+    )
+    assert (
+        await _fetchval(
+            "SELECT manifest::text FROM workloads WHERE name = $1", "legacy-agent"
+        )
+        == "{}"
+    )
+    assert await _fetchval("SELECT count(*) FROM control_plane_migrations") == len(
+        CONTROL_PLANE_MIGRATIONS
+    )
+
+
 async def test_postgres_upgrade_is_idempotent() -> None:
     assert _POSTGRES_MIGRATION_DSN is not None
     await _reset_public_schema()
@@ -144,4 +209,6 @@ async def test_postgres_upgrade_is_idempotent() -> None:
         await _fetchval("SELECT version_num FROM alembic_version LIMIT 1")
         == CONTROL_PLANE_ALEMBIC_BASELINE
     )
-    assert await _fetchval("SELECT count(*) FROM control_plane_migrations") == 8
+    assert await _fetchval("SELECT count(*) FROM control_plane_migrations") == len(
+        CONTROL_PLANE_MIGRATIONS
+    )

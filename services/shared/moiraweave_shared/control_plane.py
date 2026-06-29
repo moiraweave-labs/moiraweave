@@ -105,6 +105,13 @@ class StoredArtifact(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class StoredWorkload(BaseModel):
+    """A registered workload together with its persistent owner."""
+
+    workload: WorkloadDefinition
+    user: str | None = None
+
+
 class StoredAgentSession(BaseModel):
     session_id: str
     agent_name: str
@@ -247,6 +254,10 @@ class ControlPlaneRepository(Protocol):
 
     async def get_workload(self, name: str) -> WorkloadDefinition | None: ...
 
+    async def list_workload_records(self) -> list[StoredWorkload]: ...
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None: ...
+
     async def create_run(
         self,
         run_id: str,
@@ -291,7 +302,14 @@ class ControlPlaneRepository(Protocol):
         timestamp: str | None = None,
     ) -> StoredRunEvent: ...
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]: ...
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]: ...
 
     async def record_artifact(
         self,
@@ -316,7 +334,12 @@ class ControlPlaneRepository(Protocol):
     async def get_agent_session(self, session_id: str) -> StoredAgentSession | None: ...
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]: ...
 
     async def append_agent_message(
@@ -330,7 +353,11 @@ class ControlPlaneRepository(Protocol):
     ) -> StoredAgentMessage: ...
 
     async def list_agent_messages(
-        self, session_id: str
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
     ) -> list[StoredAgentMessage]: ...
 
     async def upsert_deployment(
@@ -458,6 +485,7 @@ class ControlPlaneRepository(Protocol):
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]: ...
@@ -572,6 +600,7 @@ class InMemoryControlPlaneRepository:
 
     def __init__(self) -> None:
         self.workloads: dict[str, WorkloadDefinition] = {}
+        self.workload_users: dict[str, str] = {}
         self.runs: dict[str, StoredRun] = {}
         self.events: dict[str, list[StoredRunEvent]] = {}
         self.artifacts: dict[str, list[StoredArtifact]] = {}
@@ -606,14 +635,27 @@ class InMemoryControlPlaneRepository:
     async def upsert_workload(
         self, workload: WorkloadDefinition, user: str, *, now: str | None = None
     ) -> None:
-        del user, now
+        del now
         self.workloads[workload.metadata.name] = workload
+        self.workload_users[workload.metadata.name] = user
 
     async def list_workloads(self) -> list[WorkloadDefinition]:
         return list(self.workloads.values())
 
     async def get_workload(self, name: str) -> WorkloadDefinition | None:
         return self.workloads.get(name)
+
+    async def list_workload_records(self) -> list[StoredWorkload]:
+        return [
+            StoredWorkload(workload=workload, user=self.workload_users.get(name))
+            for name, workload in self.workloads.items()
+        ]
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None:
+        workload = self.workloads.get(name)
+        if workload is None:
+            return None
+        return StoredWorkload(workload=workload, user=self.workload_users.get(name))
 
     async def create_run(
         self,
@@ -710,8 +752,20 @@ class InMemoryControlPlaneRepository:
         self.events.setdefault(run_id, []).append(event)
         return event
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]:
-        return list(self.events.get(run_id, []))
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]:
+        events = self.events.get(run_id, [])
+        if after_id is not None:
+            events = [event for event in events if int(event.id) > after_id]
+        if tail and limit is not None:
+            return list(events[-limit:])
+        return list(events if limit is None else events[:limit])
 
     async def record_artifact(
         self,
@@ -754,14 +808,25 @@ class InMemoryControlPlaneRepository:
         return self.sessions.get(session_id)
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]:
         sessions = [
             session
             for session in self.sessions.values()
-            if session.agent_name == agent_name and (user is None or session.user == user)
+            if session.agent_name == agent_name
+            and (user is None or session.user == user)
         ]
-        return sorted(sessions, key=lambda session: session.created_at, reverse=True)
+        sessions = sorted(
+            sessions, key=lambda session: session.created_at, reverse=True
+        )
+        if limit is None:
+            return sessions[offset:]
+        return sessions[offset : offset + limit]
 
     async def append_agent_message(
         self,
@@ -784,8 +849,21 @@ class InMemoryControlPlaneRepository:
         self.messages.setdefault(session_id, []).append(stored)
         return stored
 
-    async def list_agent_messages(self, session_id: str) -> list[StoredAgentMessage]:
-        return list(self.messages.get(session_id, []))
+    async def list_agent_messages(
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[StoredAgentMessage]:
+        messages = self.messages.get(session_id, [])
+        if before_id is not None:
+            messages = [
+                message for message in messages if int(message.message_id) < before_id
+            ]
+        if limit is not None:
+            return list(messages[-limit:])
+        return list(messages)
 
     async def upsert_deployment(
         self,
@@ -1052,6 +1130,7 @@ class InMemoryControlPlaneRepository:
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]:
@@ -1062,6 +1141,11 @@ class InMemoryControlPlaneRepository:
             and (action is None or event.action == action)
             and (resource_type is None or event.resource_type == resource_type)
             and (resource_id is None or event.resource_id == resource_id)
+            and (
+                env is None
+                or event.metadata.get("env") == env
+                or event.metadata.get("environment") == env
+            )
         ]
         events.sort(key=lambda event: event.timestamp, reverse=True)
         return events[offset : offset + limit]
@@ -1375,6 +1459,24 @@ class PostgresControlPlaneRepository:
         manifest = _json_dict(row["manifest"])
         return WorkloadDefinition.model_validate(manifest) if manifest else None
 
+    async def list_workload_records(self) -> list[StoredWorkload]:
+        rows = await self.pool.fetch(
+            "SELECT manifest, user_subject FROM workloads ORDER BY name ASC"
+        )
+        return [
+            _stored_workload_from_row(row)
+            for row in rows
+            if _json_dict(row["manifest"]) is not None
+        ]
+
+    async def get_workload_record(self, name: str) -> StoredWorkload | None:
+        row = await self.pool.fetchrow(
+            "SELECT manifest, user_subject FROM workloads WHERE name = $1", name
+        )
+        if row is None or _json_dict(row["manifest"]) is None:
+            return None
+        return _stored_workload_from_row(row)
+
     async def create_run(
         self,
         run_id: str,
@@ -1520,15 +1622,45 @@ class PostgresControlPlaneRepository:
         )
         return _event_from_row(row)
 
-    async def list_run_events(self, run_id: str) -> list[StoredRunEvent]:
-        rows = await self.pool.fetch(
-            """
+    async def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_id: int | None = None,
+        limit: int | None = None,
+        tail: bool = False,
+    ) -> list[StoredRunEvent]:
+        if tail and limit is not None:
+            rows = await self.pool.fetch(
+                """
+                SELECT id::text, run_id::text, timestamp, type, message, data
+                FROM (
+                    SELECT id, run_id, timestamp, type, message, data
+                    FROM run_events
+                    WHERE run_id = $1::uuid
+                    ORDER BY id DESC
+                    LIMIT $2
+                ) AS recent_events
+                ORDER BY id ASC
+                """,
+                run_id,
+                limit,
+            )
+            return [_event_from_row(row) for row in rows]
+        query = """
             SELECT id::text, run_id::text, timestamp, type, message, data
             FROM run_events
             WHERE run_id = $1::uuid
+              AND ($2::bigint IS NULL OR id > $2::bigint)
             ORDER BY id ASC
-            """,
-            run_id,
+        """
+        args: list[Any] = [run_id, after_id]
+        if limit is not None:
+            query += " LIMIT $3"
+            args.append(limit)
+        rows = await self.pool.fetch(
+            query,
+            *args,
         )
         return [_event_from_row(row) for row in rows]
 
@@ -1624,8 +1756,15 @@ class PostgresControlPlaneRepository:
         return _session_from_row(row) if row else None
 
     async def list_agent_sessions(
-        self, agent_name: str, user: str | None
+        self,
+        agent_name: str,
+        user: str | None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[StoredAgentSession]:
+        if limit is None:
+            limit = 2_147_483_647
         rows = await self.pool.fetch(
             """
             SELECT session_id::text, agent_name, user_subject, status,
@@ -1633,9 +1772,12 @@ class PostgresControlPlaneRepository:
             FROM agent_sessions
             WHERE agent_name = $1 AND ($2::text IS NULL OR user_subject = $2)
             ORDER BY created_at DESC
+            LIMIT $3 OFFSET $4
             """,
             agent_name,
             user,
+            limit,
+            offset,
         )
         return [_session_from_row(row) for row in rows]
 
@@ -1662,15 +1804,31 @@ class PostgresControlPlaneRepository:
         )
         return _message_from_row(row)
 
-    async def list_agent_messages(self, session_id: str) -> list[StoredAgentMessage]:
+    async def list_agent_messages(
+        self,
+        session_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[StoredAgentMessage]:
+        if limit is None:
+            limit = 2_147_483_647
         rows = await self.pool.fetch(
             """
             SELECT id::text, session_id::text, role, message, context, created_at
-            FROM agent_messages
-            WHERE session_id = $1::uuid
+            FROM (
+                SELECT id, session_id, role, message, context, created_at
+                FROM agent_messages
+                WHERE session_id = $1::uuid
+                  AND ($2::bigint IS NULL OR id < $2::bigint)
+                ORDER BY id DESC
+                LIMIT $3
+            ) AS message_page
             ORDER BY id ASC
             """,
             session_id,
+            before_id,
+            limit,
         )
         return [_message_from_row(row) for row in rows]
 
@@ -2038,6 +2196,7 @@ class PostgresControlPlaneRepository:
         action: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        env: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[StoredAuditEvent]:
@@ -2050,13 +2209,18 @@ class PostgresControlPlaneRepository:
               AND ($2::text IS NULL OR action = $2)
               AND ($3::text IS NULL OR resource_type = $3)
               AND ($4::text IS NULL OR resource_id = $4)
+              AND (
+                $5::text IS NULL
+                OR COALESCE(metadata ->> 'env', metadata ->> 'environment') = $5
+              )
             ORDER BY timestamp DESC, id DESC
-            LIMIT $5 OFFSET $6
+            LIMIT $6 OFFSET $7
             """,
             actor,
             action,
             resource_type,
             resource_id,
+            env,
             limit,
             offset,
         )
@@ -2463,6 +2627,16 @@ def _artifact_from_dict(
         size_bytes=artifact.get("size_bytes"),
         created_at=str(artifact.get("created_at") or utc_now_iso()),
         metadata=artifact.get("metadata") or {},
+    )
+
+
+def _stored_workload_from_row(row: Any) -> StoredWorkload:
+    manifest = _json_dict(row["manifest"])
+    if manifest is None:
+        raise ValueError("Stored workload manifest cannot be empty")
+    return StoredWorkload(
+        workload=WorkloadDefinition.model_validate(manifest),
+        user=str(row["user_subject"]),
     )
 
 
