@@ -7,6 +7,13 @@ The format is inspired by Keep a Changelog, and versions follow SemVer.
 > **Migration notice (2026-05-20)**: This project was previously named `inferflow` and before that `audiomind`.
 > All CLI commands are now under the `moira` entrypoint. No legacy aliases are maintained.
 
+## [0.2.2](https://github.com/moiraweave-labs/moiraweave/compare/v0.2.1...v0.2.2) (2026-06-30)
+
+
+### Documentation
+
+* clarify release publishing flow ([f5db2c8](https://github.com/moiraweave-labs/moiraweave/commit/f5db2c85ed62a1e84c811ff6ec483fac23d9c8e2))
+
 ## [0.2.1](https://github.com/moiraweave-labs/moiraweave/compare/v0.2.0...v0.2.1) (2026-06-30)
 
 
