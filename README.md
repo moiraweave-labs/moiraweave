@@ -94,8 +94,10 @@ external providers. Use `MOIRAWEAVE_REAL_HERMES_TURN_TEST=1` or
 ## CI/CD summary
 
 - `ci.yml`: lint, typecheck, tests, image build and security scan
-- `publish.yml`: publishes shared Python packages on release
-- `release.yml`: automated release PR/versioning via Release Please
+- `release.yml`: automated release PR/versioning via Release Please; when a
+  release is created, it calls the reusable Python package publish workflow
+- `publish.yml`: reusable and manual Python package build/publish workflow;
+  actual PyPI publishing is opt-in through `PYPI_PUBLISH_ENABLED=true`
 
 ## Repository model
 
