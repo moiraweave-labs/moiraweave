@@ -1,13 +1,26 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Git ref, tag, or SHA to build. Defaults to the triggering ref.
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Git ref, tag, or SHA to build. Defaults to the triggering ref.
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 env:
+  CHECKOUT_REF: ${{ inputs.ref || github.ref }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   PYTHON_VERSION: "3.13"
 
@@ -26,6 +39,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6
@@ -36,7 +51,12 @@ jobs:
         uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build package (${{ matrix.package }})
-        run: uv build --package "${{ matrix.package }}" --out-dir "dist/${{ matrix.package }}" --clear --no-create-gitignore
+        run: >-
+          uv build
+          --package "${{ matrix.package }}"
+          --out-dir "dist/${{ matrix.package }}"
+          --clear
+          --no-create-gitignore
 
       - name: Publish ${{ matrix.package }} to PyPI
         if: vars.PYPI_PUBLISH_ENABLED == 'true'
@@ -46,4 +66,6 @@ jobs:
 
       - name: Skip PyPI publish
         if: vars.PYPI_PUBLISH_ENABLED != 'true'
-        run: echo "Set repository variable PYPI_PUBLISH_ENABLED=true after configuring PyPI trusted publishing."
+        run: >-
+          echo "Set repository variable PYPI_PUBLISH_ENABLED=true after
+          configuring PyPI trusted publishing."
