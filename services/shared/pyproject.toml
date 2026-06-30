@@ -1,6 +1,6 @@
 [project]
 name = "moiraweave-shared"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shared constants and schemas for MoiraWeave services"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,3 +10,7 @@ dependencies = [
     "pyyaml>=6.0",
     "SQLAlchemy>=2.0",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

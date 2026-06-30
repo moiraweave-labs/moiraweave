@@ -1,6 +1,6 @@
 [project]
 name = "moiraweave-model-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "KServe V2 protocol base classes for moiraweave workload components"
 requires-python = ">=3.13"
 dependencies = [

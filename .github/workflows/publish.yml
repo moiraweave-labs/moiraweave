@@ -21,8 +21,8 @@ jobs:
     strategy:
       matrix:
         package:
-          - services/model-sdk
-          - services/shared
+          - moiraweave-model-sdk
+          - moiraweave-shared
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -36,11 +36,14 @@ jobs:
         uses: astral-sh/setup-uv@v8.2.0
 
       - name: Build package (${{ matrix.package }})
-        run: |
-          cd ${{ matrix.package }}
-          uv build
+        run: uv build --package "${{ matrix.package }}" --out-dir "dist/${{ matrix.package }}" --clear --no-create-gitignore
 
       - name: Publish ${{ matrix.package }} to PyPI
+        if: vars.PYPI_PUBLISH_ENABLED == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: ${{ matrix.package }}/dist
+          packages-dir: dist/${{ matrix.package }}
+
+      - name: Skip PyPI publish
+        if: vars.PYPI_PUBLISH_ENABLED != 'true'
+        run: echo "Set repository variable PYPI_PUBLISH_ENABLED=true after configuring PyPI trusted publishing."

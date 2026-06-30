@@ -2021,7 +2021,7 @@ requires-dist = [
 
 [[package]]
 name = "moiraweave-model-sdk"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "services/model-sdk" }
 dependencies = [
     { name = "fastapi" },
@@ -2036,7 +2036,7 @@ requires-dist = [
 
 [[package]]
 name = "moiraweave-shared"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "services/shared" }
 dependencies = [
     { name = "alembic" },
