@@ -744,6 +744,51 @@ async def test_run_events_support_incremental_cursor_reads(
     assert invalid_last_event.status_code == 422
 
 
+async def test_run_events_handle_long_timelines_with_cursor_and_tail(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    await control_plane.create_run(
+        "run-long-events",
+        "hermes",
+        {},
+        "testuser",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    for index in range(250):
+        await control_plane.append_run_event(
+            "run-long-events",
+            f"agent.step.{index:03d}",
+            f"Agent step {index}",
+            timestamp=f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00",
+            data={"index": index},
+        )
+
+    page = await auth_client.get("/v1/runs/run-long-events/events?limit=7&after_id=120")
+    recent = await auth_client.get("/v1/runs/run-long-events/events?limit=5&tail=true")
+
+    assert page.status_code == 200
+    assert [event["type"] for event in page.json()] == [
+        "agent.step.120",
+        "agent.step.121",
+        "agent.step.122",
+        "agent.step.123",
+        "agent.step.124",
+        "agent.step.125",
+        "agent.step.126",
+    ]
+    assert [event["data"]["index"] for event in page.json()] == list(range(120, 127))
+
+    assert recent.status_code == 200
+    assert [event["type"] for event in recent.json()] == [
+        "agent.step.245",
+        "agent.step.246",
+        "agent.step.247",
+        "agent.step.248",
+        "agent.step.249",
+    ]
+
+
 async def test_artifact_library_filters_by_workload_session_and_type(
     auth_client: AsyncClient,
     control_plane: InMemoryControlPlaneRepository,
@@ -778,6 +823,54 @@ async def test_artifact_library_filters_by_workload_session_and_type(
     assert resp.json()[0]["name"] == "trace.json"
     assert resp.json()[0]["workload_name"] == "hermes"
     assert resp.json()[0]["session_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+async def test_artifact_library_pages_large_filtered_result_sets(
+    auth_client: AsyncClient,
+    control_plane: InMemoryControlPlaneRepository,
+) -> None:
+    for index in range(30):
+        run_id = f"run-artifact-page-{index:02d}"
+        await control_plane.create_run(
+            run_id,
+            "hermes",
+            {},
+            "testuser",
+            created_at=f"2026-01-{index + 1:02d}T00:00:00+00:00",
+        )
+        await control_plane.record_artifact(
+            run_id,
+            {
+                "id": f"artifact-page-{index:02d}",
+                "name": f"artifact-{index:02d}.json",
+                "uri": f"file:///artifact-{index:02d}.json",
+                "content_type": (
+                    "application/json" if index % 2 == 0 else "text/plain"
+                ),
+                "created_at": f"2026-01-{index + 1:02d}T00:00:00+00:00",
+                "metadata": {"index": index},
+            },
+        )
+
+    resp = await auth_client.get(
+        "/v1/artifacts?"
+        "workload_name=hermes&"
+        "content_type=application/json&"
+        "created_from=2026-01-05T00:00:00%2B00:00&"
+        "created_to=2026-01-25T00:00:00%2B00:00&"
+        "limit=4&"
+        "offset=2"
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [artifact["name"] for artifact in body] == [
+        "artifact-20.json",
+        "artifact-18.json",
+        "artifact-16.json",
+        "artifact-14.json",
+    ]
+    assert [artifact["metadata"]["index"] for artifact in body] == [20, 18, 16, 14]
 
 
 async def test_artifact_library_filters_by_environment(
