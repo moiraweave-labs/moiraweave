@@ -7,6 +7,18 @@ The format is inspired by Keep a Changelog, and versions follow SemVer.
 > **Migration notice (2026-05-20)**: This project was previously named `inferflow` and before that `audiomind`.
 > All CLI commands are now under the `moira` entrypoint. No legacy aliases are maintained.
 
+## [0.2.3](https://github.com/moiraweave-labs/moiraweave/compare/v0.2.2...v0.2.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* harden k8s secrets and auth state ([2b8ea75](https://github.com/moiraweave-labs/moiraweave/commit/2b8ea75a35d5d6f062c8bf35b327421aa46372bb))
+
+
+### Documentation
+
+* clarify PyPI runtime dependency ([49d6738](https://github.com/moiraweave-labs/moiraweave/commit/49d6738f163cc3fd12d3b369802e62385627c17e))
+
 ## [0.2.2](https://github.com/moiraweave-labs/moiraweave/compare/v0.2.1...v0.2.2) (2026-06-30)
 
 
