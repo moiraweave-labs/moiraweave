@@ -44,6 +44,12 @@ Use the CLI instead. The fastest local path is:
 2. `moira up`
 3. Open `http://localhost:3000`
 
+PyPI is only needed for that convenient CLI installation path and for publishing
+the optional Python packages in this repository. The running platform itself is
+started from Docker/Compose or Helm using GHCR images and the OCI Helm chart, so
+API Gateway, worker, UI, Postgres, Redis, Qdrant, workloads, and Kubernetes
+deployments do not depend on PyPI being available at runtime.
+
 `moira up` initializes a workspace if needed, creates a no-secret demo agent
 when there are no workloads, starts API, worker, Postgres, Redis, Qdrant, UI,
 and workload services, then registers deployment records.
@@ -97,7 +103,9 @@ external providers. Use `MOIRAWEAVE_REAL_HERMES_TURN_TEST=1` or
 - `release.yml`: automated release PR/versioning via Release Please; when a
   release is created, it calls the reusable Python package publish workflow
 - `publish.yml`: reusable and manual Python package build/publish workflow;
-  actual PyPI publishing is opt-in through `PYPI_PUBLISH_ENABLED=true`
+  actual PyPI publishing is opt-in through `PYPI_PUBLISH_ENABLED=true`. Leaving
+  that variable disabled does not block the platform images, Helm chart, Compose
+  startup, or Kubernetes deployment flow.
 
 ## Repository model
 
