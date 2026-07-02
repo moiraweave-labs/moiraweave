@@ -54,6 +54,9 @@ async def _api_key_user(token: str, control_plane: ControlPlane) -> TokenData | 
     stored = await control_plane.get_api_key_by_secret_hash(secret_hash)
     if stored is None:
         return None
+    stored_user = await control_plane.get_user(stored.subject)
+    if stored_user is not None and stored_user.disabled_at is not None:
+        return None
     await control_plane.touch_api_key(stored.key_id)
     return TokenData(
         subject=stored.subject,
@@ -61,6 +64,25 @@ async def _api_key_user(token: str, control_plane: ControlPlane) -> TokenData | 
         api_key_id=stored.key_id,
         team_id=stored.team_id,
     )
+
+
+async def _jwt_user_from_payload(
+    payload: dict[str, object], control_plane: ControlPlane
+) -> TokenData:
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        raise _auth_error()
+
+    stored_user = await control_plane.get_user(subject)
+    if stored_user is not None:
+        if stored_user.disabled_at is not None:
+            raise _auth_error()
+        return TokenData(
+            subject=stored_user.subject,
+            role=_normalize_role(stored_user.role),
+        )
+
+    return TokenData(subject=subject, role=_normalize_role(payload.get("role")))
 
 
 async def get_current_user(
@@ -80,10 +102,7 @@ async def get_current_user(
             settings.jwt_secret_key.get_secret_value(),
             algorithms=[settings.jwt_algorithm],
         )
-        subject = payload.get("sub")
-        if not isinstance(subject, str):
-            raise exc
-        return TokenData(subject=subject, role=_normalize_role(payload.get("role")))
+        return await _jwt_user_from_payload(payload, control_plane)
     except InvalidTokenError as err:
         api_key_user = await _api_key_user(token, control_plane)
         if api_key_user is not None:

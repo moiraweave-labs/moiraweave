@@ -22,6 +22,17 @@ imagePullSecrets: []
 # ---------------------------------------------------------------------------
 imageRegistry: ghcr.io/moiraweave-labs
 # ---------------------------------------------------------------------------
+# Control-plane database DSN.
+# Keep the connection string in a Secret so rendered Deployment manifests never
+# contain database credentials.
+#
+# Required key in the secret:
+#   POSTGRES_DSN=postgresql://moiraweave:<password>@<release>-postgresql:5432/moiraweave
+# ---------------------------------------------------------------------------
+postgresDsn:
+  existingSecret: moiraweave-secrets
+  secretKey: POSTGRES_DSN
+# ---------------------------------------------------------------------------
 # api-gateway
 # ---------------------------------------------------------------------------
 apiGateway:
@@ -74,7 +85,8 @@ apiGateway:
   # Reference to a pre-existing K8s Secret that contains JWT_SECRET_KEY.
   # Create it once with:
   #   kubectl create secret generic moiraweave-secrets \
-  #     --from-literal=JWT_SECRET_KEY=<your-32-char-secret>
+  #     --from-literal=JWT_SECRET_KEY=<your-32-char-secret> \
+  #     --from-literal=POSTGRES_DSN=postgresql://moiraweave:<password>@moiraweave-postgresql:5432/moiraweave
   existingSecret: moiraweave-secrets
   secretKey: JWT_SECRET_KEY
   livenessProbe:
@@ -204,8 +216,11 @@ postgresql:
   enabled: true
   auth:
     username: moiraweave
-    password: moiraweave-dev
     database: moiraweave
+    existingSecret: moiraweave-secrets
+    secretKeys:
+      adminPasswordKey: POSTGRES_POSTGRES_PASSWORD
+      userPasswordKey: POSTGRES_PASSWORD
   primary:
     persistence:
       enabled: true

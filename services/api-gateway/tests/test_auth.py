@@ -276,6 +276,56 @@ async def test_me_returns_jwt_profile(client: AsyncClient) -> None:
     }
 
 
+async def test_jwt_for_persistent_user_uses_current_role(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={"subject": "alice", "password": "correct-horse", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    alice_token = _token("alice", "operator")
+
+    updated = await client.patch(
+        "/auth/users/alice",
+        json={"role": "viewer"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+
+    assert updated.status_code == 200
+    assert profile.status_code == 200
+    assert profile.json()["role"] == "viewer"
+
+
+async def test_jwt_for_disabled_persistent_user_is_rejected(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={"subject": "alice", "password": "correct-horse", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    alice_token = _token("alice", "operator")
+
+    disabled = await client.delete(
+        "/auth/users/alice",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {alice_token}"},
+    )
+
+    assert disabled.status_code == 200
+    assert profile.status_code == 401
+
+
 async def test_api_key_allows_authenticated_request(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -375,6 +425,35 @@ async def test_admin_can_create_use_and_revoke_persistent_api_key(
     )
     actions = {event["action"] for event in audit.json()}
     assert {"api_key.create", "api_key.revoke"} <= actions
+
+
+async def test_persistent_api_key_for_disabled_user_is_rejected(
+    client: AsyncClient,
+) -> None:
+    admin_token = _token("admin", "admin")
+    await client.post(
+        "/auth/users",
+        json={"subject": "ci", "password": "correct-horse", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    created = await client.post(
+        "/auth/api-keys",
+        json={"name": "ci deploy", "subject": "ci", "role": "operator"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    secret = created.json()["secret"]
+
+    disabled = await client.delete(
+        "/auth/users/ci",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    profile = await client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+
+    assert disabled.status_code == 200
+    assert profile.status_code == 401
 
 
 async def test_api_key_creation_is_rate_limited(

@@ -9,6 +9,9 @@
 # Prerequisites:
 #   kubectl create secret generic moiraweave-secrets \
 #     --from-literal=JWT_SECRET_KEY=<32-char-secret> \
+#     --from-literal=POSTGRES_DSN=postgresql://moiraweave:<password>@moiraweave-postgresql:5432/moiraweave \
+#     --from-literal=POSTGRES_PASSWORD=<password> \
+#     --from-literal=POSTGRES_POSTGRES_PASSWORD=<admin-password> \
 #     --from-literal=REDIS_PASSWORD=<password> \
 #     --namespace moiraweave-staging
 # ---------------------------------------------------------------------------

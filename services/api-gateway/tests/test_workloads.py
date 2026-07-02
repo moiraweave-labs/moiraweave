@@ -1556,6 +1556,13 @@ async def test_kubernetes_deployment_plan_honors_env_and_namespace(
     assert body["target"] == "kubernetes"
     assert body["files"] == [".moiraweave/deploy/values-workloads-prod.yaml"]
     assert any("--namespace agents" in command for command in body["commands"])
+    assert any(
+        command.startswith("kubectl create secret generic moiraweave-secrets")
+        and "POSTGRES_DSN=postgresql://moiraweave" in command
+        and "POSTGRES_PASSWORD" in command
+        and "--namespace agents" in command
+        for command in body["commands"]
+    )
 
 
 async def test_deployment_plan_rejects_disabled_target(

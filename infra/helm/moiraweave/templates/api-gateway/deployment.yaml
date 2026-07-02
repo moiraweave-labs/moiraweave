@@ -39,7 +39,10 @@ spec:
             - name: QDRANT_URL
               value: {{ include "moiraweave.qdrantUrl" . | quote }}
             - name: POSTGRES_DSN
-              value: {{ include "moiraweave.postgresDsn" . | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "postgresDsn.existingSecret is required" .Values.postgresDsn.existingSecret | quote }}
+                  key: {{ required "postgresDsn.secretKey is required" .Values.postgresDsn.secretKey | quote }}
             # --- secret values ---
             - name: JWT_SECRET_KEY
               valueFrom:

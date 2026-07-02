@@ -949,6 +949,12 @@ def _deployment_endpoint(workload: WorkloadDefinition) -> str | None:
     return f"http://{_deployment_service_name(workload)}:{port}"
 
 
+def _kubernetes_namespace(workload: WorkloadDefinition, env: str) -> str:
+    if workload.spec.deployment.namespace:
+        return workload.spec.deployment.namespace
+    return "moiraweave" if env == "local" else f"moiraweave-{env}"
+
+
 def _deployment_plan_response(
     workload: WorkloadDefinition,
     *,
@@ -1011,7 +1017,7 @@ def _deployment_plan_response(
         )
 
     values_file = f".moiraweave/deploy/values-workloads-{env}.yaml"
-    namespace = workload.spec.deployment.namespace or "moiraweave"
+    namespace = _kubernetes_namespace(workload, env)
     return DeploymentPlanResponse(
         workload_name=workload.metadata.name,
         target="kubernetes",
@@ -1020,6 +1026,13 @@ def _deployment_plan_response(
         endpoint=endpoint,
         files=[values_file],
         commands=[
+            "kubectl create secret generic moiraweave-secrets "
+            "--from-literal=JWT_SECRET_KEY=<32-char-secret> "
+            "--from-literal=POSTGRES_DSN=postgresql://moiraweave:<postgres-password>@moiraweave-postgresql:5432/moiraweave "
+            "--from-literal=POSTGRES_PASSWORD=<postgres-password> "
+            "--from-literal=POSTGRES_POSTGRES_PASSWORD=<postgres-admin-password> "
+            "--from-literal=REDIS_PASSWORD=<redis-password> "
+            f"--namespace {namespace}",
             f"moira deploy k8s --env {env}",
             "helm upgrade --install moiraweave infra/helm/moiraweave "
             f"--namespace {namespace} --create-namespace -f {values_file}",
@@ -1804,6 +1817,7 @@ def _preflight_action_guide(
     actions: list[PreflightAction] = []
     missing_secrets = _preflight_missing_secrets(checks)
     required_secrets = _preflight_required_secrets(checks)
+    namespace = _kubernetes_namespace(workload, env)
     if target == "kubernetes" and required_secrets:
         actions.append(
             PreflightAction(
@@ -1836,6 +1850,7 @@ def _preflight_action_guide(
                 ),
                 command=(
                     f"kubectl create secret generic moiraweave-secrets {kubernetes_secret_args}"
+                    f" --namespace {namespace}"
                     if target == "kubernetes"
                     else f"printf '{local_secret_lines}\\n' >> .env"
                 ),

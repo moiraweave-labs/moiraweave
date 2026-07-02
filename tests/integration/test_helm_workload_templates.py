@@ -126,6 +126,37 @@ def test_deployment_controller_values_define_disabled_secure_default() -> None:
     assert controller["auth"]["tokenKey"] == "MOIRA_TOKEN"
 
 
+def test_control_plane_postgres_dsn_is_loaded_from_secret_ref() -> None:
+    values = _read_yaml("infra/helm/moiraweave/values.yaml")
+    api_gateway = _read_text(
+        "infra/helm/moiraweave/templates/api-gateway/deployment.yaml"
+    )
+    worker = _read_text("infra/helm/moiraweave/templates/worker/deployment.yaml")
+    helpers = _read_text("infra/helm/moiraweave/templates/_helpers.tpl")
+
+    assert values["postgresDsn"] == {
+        "existingSecret": "moiraweave-secrets",
+        "secretKey": "POSTGRES_DSN",
+    }
+    assert values["postgresql"]["auth"]["existingSecret"] == "moiraweave-secrets"
+    assert values["postgresql"]["auth"]["secretKeys"]["userPasswordKey"] == (
+        "POSTGRES_PASSWORD"
+    )
+    assert values["postgresql"]["auth"]["secretKeys"]["adminPasswordKey"] == (
+        "POSTGRES_POSTGRES_PASSWORD"
+    )
+    assert "password" not in values["postgresql"]["auth"]
+    for template in (api_gateway, worker):
+        assert "- name: POSTGRES_DSN" in template
+        assert "valueFrom:" in template
+        assert "secretKeyRef:" in template
+        assert "postgresDsn.existingSecret is required" in template
+        assert "postgresDsn.secretKey is required" in template
+        assert "moiraweave.postgresDsn" not in template
+        assert "postgresql://" not in template
+    assert "moiraweave.postgresDsn" not in helpers
+
+
 def test_staging_and_prod_overlays_disable_demo_auth_and_enable_network_policy() -> None:
     staging = _read_yaml("infra/helm/moiraweave/values-staging.yaml")
     prod = _read_yaml("infra/helm/moiraweave/values-prod.yaml")

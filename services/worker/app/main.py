@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 import uuid
+from urllib.parse import urlsplit, urlunsplit
 
 from moiraweave_shared.control_plane import connect_postgres_control_plane
 from prometheus_client import start_http_server
@@ -28,6 +29,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _redact_dsn(value: str) -> str:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "<configured>"
+    if not parts.netloc:
+        return "<configured>"
+
+    netloc = parts.netloc
+    if "@" in netloc:
+        credentials, host = netloc.rsplit("@", 1)
+        username = credentials.split(":", 1)[0]
+        netloc = f"{username}:***@{host}" if username else f"***@{host}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 async def _main() -> None:
     settings = get_settings()
     consumer_id = f"worker-{uuid.uuid4().hex[:8]}"
@@ -36,7 +53,7 @@ async def _main() -> None:
         "worker_start consumer=%s redis=%s postgres=%s metrics_port=%d",
         consumer_id,
         settings.redis_url,
-        settings.postgres_dsn,
+        _redact_dsn(settings.postgres_dsn),
         _METRICS_PORT,
     )
 

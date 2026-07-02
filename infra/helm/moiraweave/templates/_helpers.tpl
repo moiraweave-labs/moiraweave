@@ -138,10 +138,3 @@ Qdrant URL — points to the Qdrant service.
 {{- define "moiraweave.qdrantUrl" -}}
 {{- printf "http://%s-qdrant:6333" .Release.Name }}
 {{- end }}
-
-{{/*
-Postgres DSN — defaults to the Bitnami PostgreSQL subchart.
-*/}}
-{{- define "moiraweave.postgresDsn" -}}
-{{- printf "postgresql://%s:%s@%s-postgresql:5432/%s" .Values.postgresql.auth.username .Values.postgresql.auth.password .Release.Name .Values.postgresql.auth.database }}
-{{- end }}
