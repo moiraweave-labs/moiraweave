@@ -38,7 +38,7 @@ postgresDsn:
 apiGateway:
   image:
     repository: ghcr.io/moiraweave-labs/moiraweave/api-gateway
-    tag: sha-49d6738
+    tag: sha-2b8ea75
     pullPolicy: IfNotPresent
   replicaCount: 2
   service:
@@ -119,7 +119,7 @@ apiGateway:
 worker:
   image:
     repository: ghcr.io/moiraweave-labs/moiraweave/worker
-    tag: sha-49d6738
+    tag: sha-2b8ea75
     pullPolicy: IfNotPresent
   replicaCount: 1
   resources:
